@@ -38,3 +38,24 @@ async def test_hybrid_search_finds_relevant(tmp_path):
     )
     contents = [r.content for r in results]
     assert any("tuna" in c.lower() for c in contents)
+
+
+@pytest.mark.asyncio
+async def test_rerank_orders_by_llm_response(tmp_path):
+    conn = _seed(tmp_path)
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[1.0, 0.0] + [0.0] * 1022)
+    fake_or = AsyncMock()
+    # LLM returns a JSON list of ids in best-first order
+    fake_or.complete = AsyncMock(return_value="[3, 1]")
+
+    from src.core.search import rerank, hybrid_search
+    candidates = await hybrid_search(
+        conn, jina=fake_jina, owner_id=1,
+        clean_query="tuna", kind=None, limit=5,
+    )
+    reranked = await rerank(
+        fake_or, primary="x", fallback="y",
+        query="tuna sushi", candidates=candidates, top_k=2,
+    )
+    assert [n.id for n in reranked] == [3, 1]
