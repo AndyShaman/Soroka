@@ -18,7 +18,9 @@ def create_or_get_owner(conn: sqlite3.Connection, telegram_id: int) -> Owner:
         (telegram_id, int(time.time())),
     )
     conn.commit()
-    return get_owner(conn, telegram_id)
+    owner = get_owner(conn, telegram_id)
+    assert owner is not None  # row guaranteed to exist after INSERT OR IGNORE
+    return owner
 
 
 def get_owner(conn: sqlite3.Connection, telegram_id: int) -> Optional[Owner]:
