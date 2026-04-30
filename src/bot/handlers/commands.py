@@ -1,7 +1,12 @@
+import datetime as dt
+from pathlib import Path
+
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
+from src.adapters.github_mirror import GitHubMirror, GitHubMirrorError
 from src.bot.auth import is_owner
+from src.core.export import build_export
 from src.core.owners import get_owner
 
 HELP_TEXT = (
@@ -198,11 +203,70 @@ async def mcp_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
+TG_FILE_LIMIT = 50 * 1024 * 1024
+WORK_DIR = Path("/app/data/exports")
+
+
+async def export_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    settings = ctx.application.bot_data["settings"]
+    conn = ctx.application.bot_data["conn"]
+    if not is_owner(update.effective_user.id, settings.owner_telegram_id):
+        return
+    owner = get_owner(conn, settings.owner_telegram_id)
+    if not owner:
+        return
+
+    await update.message.reply_text("Собираю архив…")
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    ts = dt.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    full_path = WORK_DIR / f"soroka-{ts}.zip"
+    db_path = Path(settings.db_path)
+    attachments_dir = db_path.parent / "attachments"
+
+    build_export(db_path=db_path, attachments_dir=attachments_dir,
+                  output_path=full_path, lite=False)
+
+    if full_path.stat().st_size <= TG_FILE_LIMIT:
+        with full_path.open("rb") as f:
+            await update.message.reply_document(document=f, filename=full_path.name)
+        return
+
+    if not (owner.github_token and owner.github_mirror_repo):
+        lite_path = WORK_DIR / f"soroka-{ts}-lite.zip"
+        build_export(db_path=db_path, attachments_dir=None,
+                      output_path=lite_path, lite=True)
+        with lite_path.open("rb") as f:
+            await update.message.reply_document(document=f, filename=lite_path.name)
+        await update.message.reply_text(
+            f"Полный архив {full_path.stat().st_size//1024//1024}MB не помещается. "
+            "Включи зеркало через /setgithub чтобы я мог отдать ссылку.",
+        )
+        return
+
+    mirror = GitHubMirror(token=owner.github_token, repo=owner.github_mirror_repo)
+    try:
+        url = await mirror.upload_release(
+            tag=f"backup-{ts}", title=f"Soroka backup {ts}",
+            body="Automated backup from /export.", asset=full_path,
+        )
+    except GitHubMirrorError as e:
+        await update.message.reply_text(f"GitHub-зеркало отказало: {e}")
+        return
+
+    lite_path = WORK_DIR / f"soroka-{ts}-lite.zip"
+    build_export(db_path=db_path, attachments_dir=None,
+                  output_path=lite_path, lite=True)
+    with lite_path.open("rb") as f:
+        await update.message.reply_document(document=f, filename=lite_path.name)
+    await update.message.reply_text(f"Полный архив тут: {url}")
+
+
 def register_command_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(CommandHandler("mcp", mcp_command))
+    app.add_handler(CommandHandler("export", export_command))
     for kind in PENDING_PROMPTS:
         app.add_handler(CommandHandler(f"set{kind}", _make_set_command(kind)))
     # The pending-set handler must run BEFORE search handler.
