@@ -13,6 +13,7 @@ from src.core.owners import (
     create_or_get_owner, get_owner, update_owner_field, advance_setup_step,
 )
 from src.bot.auth import is_owner
+from src.bot.handlers.setup_models import register_model_handlers
 
 PROMPTS = {
     "jina":      "Шаг 1/6 — ключ Jina.\nЗайди на jina.ai → API → Free tier.\nПришли ключ сообщением.",
@@ -111,4 +112,4 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 def register_setup_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("start", start_handler))
-    # Catch-all DM text handler is wired in Task 19 (search) — setup state takes priority there.
+    register_model_handlers(app)
