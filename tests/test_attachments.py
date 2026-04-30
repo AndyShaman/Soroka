@@ -20,3 +20,20 @@ def test_insert_and_list_attachment(tmp_path):
     attachments = list_attachments(conn, note_id)
     assert len(attachments) == 1
     assert attachments[0].original_name == "x.pdf"
+
+
+def test_is_oversized_roundtrip(tmp_path):
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+    note_id = insert_note(conn, Note(
+        owner_id=1, tg_message_id=2, tg_chat_id=-1,
+        kind="oversized", content="big", created_at=1,
+    ))
+    insert_attachment(conn, Attachment(
+        note_id=note_id, file_path="data/big.pdf",
+        file_size=999, original_name="big.pdf",
+        is_oversized=True,
+    ))
+    result = list_attachments(conn, note_id)
+    assert result[0].is_oversized is True
