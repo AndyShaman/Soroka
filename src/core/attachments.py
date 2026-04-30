@@ -11,6 +11,7 @@ def insert_attachment(conn: sqlite3.Connection, att: Attachment) -> int:
          att.original_name, int(att.is_oversized)),
     )
     conn.commit()
+    assert cur.lastrowid is not None
     return cur.lastrowid
 
 
