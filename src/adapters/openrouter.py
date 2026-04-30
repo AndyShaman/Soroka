@@ -5,7 +5,9 @@ import httpx
 
 
 class OpenRouterError(Exception):
-    pass
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -32,13 +34,20 @@ class OpenRouterClient:
                 f"{self.BASE}/auth/key",
                 headers={"Authorization": f"Bearer {self._api_key}"},
             )
-        return r.status_code == 200
+        if r.status_code == 200:
+            return True
+        if r.status_code in (401, 403):
+            return False
+        raise OpenRouterError(
+            f"transient error {r.status_code}: {r.text[:200]}",
+            status_code=r.status_code,
+        )
 
     async def list_models(self) -> list[ModelInfo]:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             r = await client.get(f"{self.BASE}/models")
         if r.status_code != 200:
-            raise OpenRouterError(f"{r.status_code}: {r.text[:200]}")
+            raise OpenRouterError(f"{r.status_code}: {r.text[:200]}", status_code=r.status_code)
         models = []
         for d in r.json()["data"]:
             try:
@@ -73,7 +82,7 @@ class OpenRouterClient:
                 json={"model": model, "messages": messages, "max_tokens": max_tokens},
             )
         if r.status_code in self.HTTP_RETRY_STATUSES or r.status_code >= 500:
-            raise OpenRouterError(f"{r.status_code}: {r.text[:200]}")
+            raise OpenRouterError(f"{r.status_code}: {r.text[:200]}", status_code=r.status_code)
         if r.status_code != 200:
-            raise OpenRouterError(f"{r.status_code}: {r.text[:200]}")
+            raise OpenRouterError(f"{r.status_code}: {r.text[:200]}", status_code=r.status_code)
         return r.json()["choices"][0]["message"]["content"]
