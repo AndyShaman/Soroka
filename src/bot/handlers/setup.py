@@ -86,6 +86,55 @@ async def process_setup_message(conn: sqlite3.Connection, owner_id: int,
     return "Не понимаю. Попробуй /start."
 
 
+async def forward_inbox_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    settings = ctx.application.bot_data["settings"]
+    conn = ctx.application.bot_data["conn"]
+    if not is_owner(update.effective_user.id, settings.owner_telegram_id):
+        return
+
+    owner = get_owner(conn, settings.owner_telegram_id)
+    if owner.setup_step != "channel":
+        return  # other handlers (search) take over
+
+    msg = update.message
+    if not msg.forward_origin or msg.forward_origin.type != "channel":
+        await msg.reply_text("Это не форвард из канала. Форвардни сообщение прямо из канала «Избранное 2».")
+        return
+
+    chat_id = msg.forward_origin.chat.id
+    update_owner_field(conn, settings.owner_telegram_id, "inbox_chat_id", chat_id)
+    advance_setup_step(conn, settings.owner_telegram_id, "done")
+
+    # Test publish into the channel
+    try:
+        sent = await ctx.bot.send_message(
+            chat_id=chat_id,
+            text="✅ Soroka подключилась.",
+        )
+        # Schedule deletion after 10s — best-effort
+        ctx.job_queue.run_once(
+            lambda c: c.bot.delete_message(chat_id, sent.message_id),
+            when=10,
+        )
+    except Exception:
+        await msg.reply_text("⚠ Не могу публиковать в канал. Проверь права админа.")
+        return
+
+    await msg.reply_text(DONE_MESSAGE)
+
+
+async def skip_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    settings = ctx.application.bot_data["settings"]
+    conn = ctx.application.bot_data["conn"]
+    owner = get_owner(conn, settings.owner_telegram_id)
+    if owner and owner.setup_step == "github":
+        from src.bot.handlers.setup_github import handle_skip_github
+        msg = await handle_skip_github(conn, settings.owner_telegram_id)
+        await update.message.reply_text(msg)
+    else:
+        await update.message.reply_text("Сейчас нечего пропускать.")
+
+
 async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     settings = ctx.application.bot_data["settings"]
     conn = ctx.application.bot_data["conn"]
@@ -112,4 +161,9 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 def register_setup_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("start", start_handler))
+    app.add_handler(CommandHandler("skip", skip_handler))
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & filters.FORWARDED,
+        forward_inbox_handler,
+    ))
     register_model_handlers(app)
