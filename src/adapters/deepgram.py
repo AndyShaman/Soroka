@@ -2,7 +2,9 @@ import httpx
 
 
 class DeepgramError(Exception):
-    pass
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class DeepgramClient:
@@ -19,7 +21,14 @@ class DeepgramClient:
                 f"{self.BASE}/projects",
                 headers={"Authorization": f"Token {self._api_key}"},
             )
-        return r.status_code == 200
+        if r.status_code == 200:
+            return True
+        if r.status_code in (401, 403):
+            return False
+        raise DeepgramError(
+            f"transient error {r.status_code}: {r.text[:200]}",
+            status_code=r.status_code,
+        )
 
     async def transcribe(self, audio_bytes: bytes, mime: str = "audio/ogg") -> str:
         params = {"model": self.MODEL, "language": "multi", "smart_format": "true"}
@@ -34,7 +43,7 @@ class DeepgramClient:
                 content=audio_bytes,
             )
         if r.status_code != 200:
-            raise DeepgramError(f"{r.status_code}: {r.text[:200]}")
+            raise DeepgramError(f"{r.status_code}: {r.text[:200]}", status_code=r.status_code)
         data = r.json()
         try:
             return data["results"]["channels"][0]["alternatives"][0]["transcript"]
