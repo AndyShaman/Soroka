@@ -75,3 +75,58 @@ async def test_ingest_voice_transcribes_and_stores(tmp_path):
     n = get_note(conn, note_id)
     assert n.kind == "voice"
     assert n.content == "голосовая заметка"
+
+
+@pytest.mark.asyncio
+async def test_ingest_document_pdf(tmp_path, monkeypatch):
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    monkeypatch.setattr(
+        "src.core.ingest.extract_pdf",
+        lambda path: "PDF content text",
+    )
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    pdf_path = tmp_path / "doc.pdf"
+    pdf_path.write_bytes(b"%PDF-")
+
+    from src.core.ingest import ingest_document
+    note_id = await ingest_document(
+        conn, jina=fake_jina, owner_id=1,
+        tg_chat_id=-1, tg_message_id=20,
+        local_path=pdf_path, original_name="doc.pdf",
+        kind="pdf", file_size=5,
+        caption="мой пдф", created_at=1, is_oversized=False,
+    )
+    from src.core.notes import get_note
+    from src.core.attachments import list_attachments
+    n = get_note(conn, note_id)
+    assert n.kind == "pdf"
+    assert "PDF content text" in n.content
+    atts = list_attachments(conn, note_id)
+    assert atts[0].original_name == "doc.pdf"
+
+
+@pytest.mark.asyncio
+async def test_ingest_oversized_records_metadata_only(tmp_path):
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    from src.core.ingest import ingest_document
+    note_id = await ingest_document(
+        conn, jina=fake_jina, owner_id=1,
+        tg_chat_id=-1, tg_message_id=21,
+        local_path=None, original_name="big.zip",
+        kind="oversized", file_size=99_000_000,
+        caption="архив", created_at=1, is_oversized=True,
+    )
+    from src.core.notes import get_note
+    n = get_note(conn, note_id)
+    assert n.kind == "oversized"
+    assert "big.zip" in n.content
