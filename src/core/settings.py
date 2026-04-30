@@ -19,8 +19,14 @@ def load_settings() -> Settings:
         raise RuntimeError(
             "TELEGRAM_BOT_TOKEN and OWNER_TELEGRAM_ID must be set in .env"
         )
+    try:
+        owner_id = int(owner_str)
+    except ValueError:
+        raise RuntimeError(
+            f"OWNER_TELEGRAM_ID must be an integer, got {owner_str!r}"
+        ) from None
     return Settings(
         telegram_bot_token=token,
-        owner_telegram_id=int(owner_str),
+        owner_telegram_id=owner_id,
         db_path=os.environ.get("SOROKA_DB_PATH", "/app/data/soroka.db"),
     )
