@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+VPS="$1"
+SSH_USER="${2:-root}"
+ssh "$SSH_USER@$VPS" 'cd /opt/soroka && git pull && docker compose up -d --build'

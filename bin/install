@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VPS_IP=""
+SSH_USER="root"
+SSH_KEY="$HOME/.ssh/id_rsa"
+TG_TOKEN=""
+OWNER_ID=""
+REPO_URL="https://github.com/$(git config --get remote.origin.url 2>/dev/null \
+  | sed -E 's#.*github.com[:/](.*?)(\.git)?$#\1#' \
+  || echo 'YOUR_USER/soroka').git"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --vps-ip) VPS_IP="$2"; shift 2;;
+    --ssh-user) SSH_USER="$2"; shift 2;;
+    --ssh-key) SSH_KEY="$2"; shift 2;;
+    --tg-token) TG_TOKEN="$2"; shift 2;;
+    --owner-id) OWNER_ID="$2"; shift 2;;
+    --repo) REPO_URL="$2"; shift 2;;
+    *) echo "unknown flag: $1" >&2; exit 1;;
+  esac
+done
+
+read_if_empty() {
+  local var_name="$1" prompt="$2" default="${3:-}"
+  if [[ -z "${!var_name}" ]]; then
+    if [[ -n "$default" ]]; then
+      read -rp "$prompt [$default]: " value
+      printf -v "$var_name" "%s" "${value:-$default}"
+    else
+      read -rp "$prompt: " value
+      printf -v "$var_name" "%s" "$value"
+    fi
+  fi
+}
+
+echo "🐦 Soroka — installer"
+read_if_empty VPS_IP    "VPS IP"
+read_if_empty SSH_USER  "SSH user" "root"
+read_if_empty SSH_KEY   "SSH key path" "$HOME/.ssh/id_rsa"
+read_if_empty TG_TOKEN  "Telegram bot token (from @BotFather)"
+read_if_empty OWNER_ID  "Your Telegram ID (from @userinfobot)"
+
+echo
+echo "Verifying SSH..."
+ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new "$SSH_USER@$VPS_IP" 'echo ok' >/dev/null
+echo "✓ SSH OK"
+
+echo "Deploying..."
+ssh -i "$SSH_KEY" "$SSH_USER@$VPS_IP" bash <<EOF
+set -euo pipefail
+
+if ! command -v docker >/dev/null; then
+  apt-get update
+  apt-get install -y docker.io docker-compose-plugin git
+fi
+
+mkdir -p /opt
+cd /opt
+if [[ ! -d soroka ]]; then
+  git clone $REPO_URL soroka
+fi
+cd /opt/soroka
+git pull
+
+cat > .env <<ENV
+TELEGRAM_BOT_TOKEN=$TG_TOKEN
+OWNER_TELEGRAM_ID=$OWNER_ID
+ENV
+chmod 600 .env
+
+docker compose up -d --build
+
+cp scripts/soroka-mcp /usr/local/bin/
+chmod +x /usr/local/bin/soroka-mcp
+
+docker ps | grep soroka-bot >/dev/null && echo "[✓] bot running"
+EOF
+
+cat <<MSG
+
+🎉 Готово!
+Открой Telegram, найди своего бота и отправь /start.
+Дальше всё настроишь в чате с ботом.
+MSG
