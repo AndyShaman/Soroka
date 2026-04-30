@@ -40,13 +40,13 @@ async def test_complete_falls_back_on_primary_error(httpx_mock):
     # First call (primary) returns 503
     httpx_mock.add_response(
         url="https://openrouter.ai/api/v1/chat/completions",
-        match_json={"model": "primary/x", "messages": [{"role": "user", "content": "hi"}]},
+        match_json={"model": "primary/x", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1000},
         status_code=503,
         json={"error": "down"},
     )
     httpx_mock.add_response(
         url="https://openrouter.ai/api/v1/chat/completions",
-        match_json={"model": "fallback/y", "messages": [{"role": "user", "content": "hi"}]},
+        match_json={"model": "fallback/y", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1000},
         json={"choices": [{"message": {"content": "ok"}}]},
     )
     c = OpenRouterClient(api_key="k")
