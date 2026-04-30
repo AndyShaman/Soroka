@@ -1,21 +1,23 @@
 import sqlite3
 import struct
 
+EMBEDDING_DIMS = 1024  # must match notes_vec schema in src/core/db.py
+
 
 def _serialize(embedding: list[float]) -> bytes:
-    if len(embedding) != 1024:
-        raise ValueError(f"expected 1024 dims, got {len(embedding)}")
+    if len(embedding) != EMBEDDING_DIMS:
+        raise ValueError(f"expected {EMBEDDING_DIMS} dims, got {len(embedding)}")
     return struct.pack(f"{len(embedding)}f", *embedding)
 
 
 def upsert_embedding(conn: sqlite3.Connection, note_id: int, embedding: list[float]) -> None:
     blob = _serialize(embedding)
-    conn.execute("DELETE FROM notes_vec WHERE note_id = ?", (note_id,))
-    conn.execute(
-        "INSERT INTO notes_vec (note_id, embedding) VALUES (?, ?)",
-        (note_id, blob),
-    )
-    conn.commit()
+    with conn:
+        conn.execute("DELETE FROM notes_vec WHERE note_id = ?", (note_id,))
+        conn.execute(
+            "INSERT INTO notes_vec (note_id, embedding) VALUES (?, ?)",
+            (note_id, blob),
+        )
 
 
 def search_similar(conn: sqlite3.Connection, query_embedding: list[float],
