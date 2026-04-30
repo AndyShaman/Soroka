@@ -35,3 +35,17 @@ def test_list_recent_notes_orders_desc(tmp_path):
         ))
     rows = list_recent_notes(conn, owner_id=1, limit=10)
     assert [n.content for n in rows] == ["n2", "n1", "n0"]
+
+def test_list_recent_notes_filters_by_kind(tmp_path):
+    conn = _fixture_conn(tmp_path)
+    insert_note(conn, Note(
+        owner_id=1, tg_message_id=1, tg_chat_id=-100,
+        kind="text", content="text-note", created_at=1,
+    ))
+    insert_note(conn, Note(
+        owner_id=1, tg_message_id=2, tg_chat_id=-100,
+        kind="web", content="web-note", source_url="https://example.com",
+        created_at=2,
+    ))
+    text_only = list_recent_notes(conn, owner_id=1, kind="text")
+    assert [n.content for n in text_only] == ["text-note"]
