@@ -1,9 +1,13 @@
+import json
+import logging
 import sqlite3
 from typing import Optional
 
 from src.core.notes import get_note
 from src.core.vec import search_similar
 from src.core.models import Note
+
+logger = logging.getLogger(__name__)
 
 
 async def hybrid_search(conn: sqlite3.Connection, *, jina, owner_id: int,
@@ -48,3 +52,43 @@ def _rrf(*ranked_lists: list[int], k: int = 60) -> list[int]:
         for rank, doc_id in enumerate(ranked):
             scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
     return [doc_id for doc_id, _ in sorted(scores.items(), key=lambda x: -x[1])]
+
+
+RERANK_PROMPT = """Ты — реранкер результатов поиска для личной базы знаний.
+Запрос: {query}
+
+Кандидаты (id и фрагмент):
+{candidates}
+
+Верни JSON-массив id в порядке релевантности (сначала самый релевантный),
+не больше {top_k} элементов. Пример: [12, 5, 8].
+Если ни один не релевантен — верни пустой массив [].
+ТОЛЬКО JSON, ничего больше.
+"""
+
+
+async def rerank(openrouter, primary: str, fallback: Optional[str],
+                 query: str, candidates: list[Note], top_k: int = 5) -> list[Note]:
+    if not candidates:
+        return []
+
+    blocks = "\n\n".join(
+        f"id={n.id}: {(n.title or '')[:80]}\n{n.content[:300]}"
+        for n in candidates
+    )
+    try:
+        raw = await openrouter.complete(
+            primary=primary, fallback=fallback,
+            messages=[{"role": "user", "content": RERANK_PROMPT.format(
+                query=query, candidates=blocks, top_k=top_k,
+            )}],
+            max_tokens=200,
+        )
+        ids = json.loads(raw)
+    except Exception as e:
+        logger.warning("rerank failed (%s); using hybrid order", e)
+        return candidates[:top_k]
+
+    by_id = {n.id: n for n in candidates}
+    ordered = [by_id[i] for i in ids if i in by_id]
+    return ordered[:top_k]
