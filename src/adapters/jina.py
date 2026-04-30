@@ -4,7 +4,9 @@ import httpx
 
 
 class JinaError(Exception):
-    pass
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class JinaClient:
@@ -19,8 +21,10 @@ class JinaClient:
         try:
             await self.embed("ping", role="passage")
             return True
-        except JinaError:
-            return False
+        except JinaError as e:
+            if e.status_code == 401:
+                return False
+            raise
 
     async def embed(self, text: str, role: Literal["passage", "query"] = "passage") -> list[float]:
         task = "retrieval.passage" if role == "passage" else "retrieval.query"
@@ -31,5 +35,8 @@ class JinaClient:
                 json={"model": self.MODEL, "task": task, "input": [text]},
             )
         if r.status_code != 200:
-            raise JinaError(f"{r.status_code}: {r.text[:200]}")
-        return r.json()["data"][0]["embedding"]
+            raise JinaError(f"{r.status_code}: {r.text[:200]}", status_code=r.status_code)
+        vec = r.json()["data"][0]["embedding"]
+        if len(vec) != 1024:
+            raise JinaError(f"unexpected embedding dim: {len(vec)}, expected 1024")
+        return vec
