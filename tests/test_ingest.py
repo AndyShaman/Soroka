@@ -53,3 +53,25 @@ async def test_ingest_url_uses_web_extractor(tmp_path, monkeypatch):
     assert n.title == "Title"
     assert "Article body text" in n.content
     assert n.source_url == "https://example.com/x"
+
+
+@pytest.mark.asyncio
+async def test_ingest_voice_transcribes_and_stores(tmp_path):
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    fake_dg = AsyncMock()
+    fake_dg.transcribe = AsyncMock(return_value="голосовая заметка")
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    from src.core.ingest import ingest_voice
+    note_id = await ingest_voice(
+        conn, deepgram=fake_dg, jina=fake_jina, owner_id=1,
+        tg_chat_id=-1, tg_message_id=10,
+        audio_bytes=b"FAKE", mime="audio/ogg", caption=None, created_at=1,
+    )
+    n = get_note(conn, note_id)
+    assert n.kind == "voice"
+    assert n.content == "голосовая заметка"

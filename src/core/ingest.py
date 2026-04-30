@@ -48,3 +48,24 @@ async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
 def _make_title(text: str) -> str:
     first_line = text.strip().splitlines()[0]
     return first_line[:80]
+
+
+async def ingest_voice(conn: sqlite3.Connection, *, deepgram, jina,
+                        owner_id: int, tg_chat_id: int, tg_message_id: int,
+                        audio_bytes: bytes, mime: str,
+                        caption: Optional[str], created_at: int) -> Optional[int]:
+    transcript = await deepgram.transcribe(audio_bytes, mime=mime)
+    if not transcript.strip():
+        return None
+
+    note = Note(
+        owner_id=owner_id, tg_message_id=tg_message_id, tg_chat_id=tg_chat_id,
+        kind="voice", title=_make_title(transcript), content=transcript.strip(),
+        raw_caption=caption, created_at=created_at,
+    )
+    note_id = insert_note(conn, note)
+    if note_id is None:
+        return None
+    embedding = await jina.embed(transcript[:8000], role="passage")
+    upsert_embedding(conn, note_id, embedding)
+    return note_id
