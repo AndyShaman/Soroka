@@ -1,5 +1,5 @@
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from src.bot.auth import is_owner
 from src.core.owners import get_owner
@@ -76,7 +76,105 @@ async def cancel_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text("Отменено.")
 
 
+PENDING_PROMPTS = {
+    "jina":      ("jina_api_key", "Пришли новый ключ Jina."),
+    "deepgram":  ("deepgram_api_key", "Пришли новый ключ Deepgram."),
+    "key":       ("openrouter_key", "Пришли новый ключ OpenRouter."),
+    "github":    ("github_pair", "Пришли одной строкой: `<token> <user>/<repo>`."),
+    "vps":       ("vps_pair", "Пришли одной строкой: `<user>@<ip>` (например `andrey@65.21.45.122`)."),
+    "inbox":     ("inbox", "Форвардни сюда сообщение из нового канала."),
+}
+
+
+def _make_set_command(kind: str):
+    async def handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        settings = ctx.application.bot_data["settings"]
+        if not is_owner(update.effective_user.id, settings.owner_telegram_id):
+            return
+        ctx.user_data["pending_set"] = kind
+        _, prompt = PENDING_PROMPTS[kind]
+        await update.message.reply_text(prompt, parse_mode="Markdown")
+    return handler
+
+
+async def pending_set_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    settings = ctx.application.bot_data["settings"]
+    conn = ctx.application.bot_data["conn"]
+    if not is_owner(update.effective_user.id, settings.owner_telegram_id):
+        return
+    pending = ctx.user_data.get("pending_set")
+    if not pending:
+        return  # let other handlers (search) act
+
+    text = (update.message.text or "").strip()
+    from src.adapters.jina import JinaClient
+    from src.adapters.deepgram import DeepgramClient
+    from src.adapters.openrouter import OpenRouterClient
+    from src.adapters.github_mirror import GitHubMirror, GitHubMirrorError
+    from src.core.owners import update_owner_field
+
+    owner_id = settings.owner_telegram_id
+
+    if pending == "jina":
+        if not await JinaClient(api_key=text).validate_key():
+            await update.message.reply_text("Не подошёл. Попробуй ещё раз или /cancel.")
+            return
+        update_owner_field(conn, owner_id, "jina_api_key", text)
+
+    elif pending == "deepgram":
+        if not await DeepgramClient(api_key=text).validate_key():
+            await update.message.reply_text("Не подошёл. /cancel или попробуй ещё раз.")
+            return
+        update_owner_field(conn, owner_id, "deepgram_api_key", text)
+
+    elif pending == "key":
+        if not await OpenRouterClient(api_key=text).validate_key():
+            await update.message.reply_text("Не подошёл. /cancel или попробуй ещё раз.")
+            return
+        update_owner_field(conn, owner_id, "openrouter_key", text)
+
+    elif pending == "github":
+        parts = text.split()
+        if len(parts) != 2 or "/" not in parts[1]:
+            await update.message.reply_text("Формат: `<token> <user>/<repo>`. /cancel или попробуй ещё раз.")
+            return
+        try:
+            await GitHubMirror(token=parts[0], repo=parts[1]).validate()
+        except GitHubMirrorError as e:
+            await update.message.reply_text(f"GitHub: {e}. /cancel или попробуй ещё раз.")
+            return
+        update_owner_field(conn, owner_id, "github_token", parts[0])
+        update_owner_field(conn, owner_id, "github_mirror_repo", parts[1])
+
+    elif pending == "vps":
+        if "@" not in text:
+            await update.message.reply_text("Формат: `<user>@<ip>`. /cancel или попробуй ещё раз.")
+            return
+        user, host = text.split("@", 1)
+        update_owner_field(conn, owner_id, "vps_user", user)
+        update_owner_field(conn, owner_id, "vps_host", host)
+
+    elif pending == "inbox":
+        msg = update.message
+        if not msg.forward_origin or msg.forward_origin.type != "channel":
+            await update.message.reply_text("Это не форвард из канала. /cancel или попробуй ещё раз.")
+            return
+        update_owner_field(conn, owner_id, "inbox_chat_id", msg.forward_origin.chat.id)
+
+    ctx.user_data.pop("pending_set", None)
+    await update.message.reply_text("✓ Готово.")
+
+
 def register_command_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
+    for kind in PENDING_PROMPTS:
+        app.add_handler(CommandHandler(f"set{kind}", _make_set_command(kind)))
+    # The pending-set handler must run BEFORE search handler.
+    # python-telegram-bot dispatches by registration order within a group;
+    # explicit higher-priority group ensures this.
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & ~filters.COMMAND,
+        pending_set_handler,
+    ), group=-1)
