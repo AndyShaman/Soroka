@@ -36,7 +36,7 @@ def get_note(conn: sqlite3.Connection, note_id: int) -> Optional[Note]:
 
 def list_recent_notes(conn: sqlite3.Connection, owner_id: int, limit: int = 20,
                       kind: Optional[str] = None) -> list[Note]:
-    if kind:
+    if kind is not None:
         cur = conn.execute(
             """SELECT id, owner_id, tg_message_id, tg_chat_id, kind, title, content,
                       source_url, raw_caption, created_at
