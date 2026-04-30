@@ -70,7 +70,7 @@ class OpenRouterClient:
             r = await client.post(
                 f"{self.BASE}/chat/completions",
                 headers={"Authorization": f"Bearer {self._api_key}"},
-                json={"model": model, "messages": messages},
+                json={"model": model, "messages": messages, "max_tokens": max_tokens},
             )
         if r.status_code in self.HTTP_RETRY_STATUSES or r.status_code >= 500:
             raise OpenRouterError(f"{r.status_code}: {r.text[:200]}")
