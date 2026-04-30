@@ -165,10 +165,44 @@ async def pending_set_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text("✓ Готово.")
 
 
+async def mcp_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    settings = ctx.application.bot_data["settings"]
+    conn = ctx.application.bot_data["conn"]
+    if not is_owner(update.effective_user.id, settings.owner_telegram_id):
+        return
+
+    owner = get_owner(conn, settings.owner_telegram_id)
+    if not owner or not owner.vps_host or not owner.vps_user:
+        await update.message.reply_text(
+            "Сначала задай VPS-доступ через /setvps "
+            "(нужны для генерации SSH-команды в конфиге).")
+        return
+
+    config = (
+        '{\n'
+        '  "mcpServers": {\n'
+        '    "soroka": {\n'
+        '      "command": "ssh",\n'
+        f'      "args": ["{owner.vps_user}@{owner.vps_host}", "soroka-mcp"]\n'
+        '    }\n'
+        '  }\n'
+        '}'
+    )
+    text = (
+        "Скопируй этот блок в файл `claude_desktop_config.json`:\n"
+        "• Mac: `~/Library/Application Support/Claude/claude_desktop_config.json`\n"
+        "• Windows: `%APPDATA%\\Claude\\claude_desktop_config.json`\n\n"
+        f"```json\n{config}\n```\n\n"
+        "Перезапусти Claude Desktop. В беседе появится инструмент `soroka`."
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
 def register_command_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
+    app.add_handler(CommandHandler("mcp", mcp_command))
     for kind in PENDING_PROMPTS:
         app.add_handler(CommandHandler(f"set{kind}", _make_set_command(kind)))
     # The pending-set handler must run BEFORE search handler.
