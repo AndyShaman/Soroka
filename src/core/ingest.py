@@ -5,6 +5,7 @@ from src.core.kind import detect_kind_from_text
 from src.core.models import Note
 from src.core.notes import insert_note
 from src.core.vec import upsert_embedding
+from src.adapters.extractors.web import extract_web
 
 
 async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
@@ -20,7 +21,6 @@ async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
     source_url: Optional[str] = None
 
     if kind == "web":
-        from src.adapters.extractors.web import extract_web
         title, body = extract_web(raw)
         source_url = raw
         body = body or raw
