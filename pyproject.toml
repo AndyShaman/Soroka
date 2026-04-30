@@ -25,6 +25,7 @@ dev = [
     "pytest-asyncio==0.23.*",
     "pytest-httpx==0.30.*",
     "freezegun==1.*",
+    "reportlab==4.*",
 ]
 
 [tool.pytest.ini_options]
