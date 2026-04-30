@@ -1,0 +1,2 @@
+#!/bin/sh
+exec docker exec -i soroka-bot python -m src.mcp.server
