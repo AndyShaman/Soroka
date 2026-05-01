@@ -86,7 +86,7 @@ PENDING_PROMPTS = {
     "deepgram":  ("deepgram_api_key", "Пришли новый ключ Deepgram."),
     "key":       ("openrouter_key", "Пришли новый ключ OpenRouter."),
     "github":    ("github_pair", "Пришли одной строкой: `<token> <user>/<repo>`."),
-    "vps":       ("vps_pair", "Пришли одной строкой: `<user>@<ip>` (например `andrey@65.21.45.122`)."),
+    "vps":       ("vps_pair", "Пришли одной строкой: `<user>@<ip>` (например `user@203.0.113.10`)."),
     "inbox":     ("inbox", "Форвардни сюда сообщение из нового канала."),
 }
 
