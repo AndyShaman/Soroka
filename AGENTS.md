@@ -7,14 +7,15 @@ deploying Soroka. Humans should read `README.md`.
 
 Ask the user for these (and only these) before doing anything else:
 
-- `VPS_IP`            — public IP of an Ubuntu 22.04+ VPS
-- `SSH_USER`          — SSH user (default: `root`)
-- `SSH_KEY`           — path to SSH private key (default: `~/.ssh/id_rsa`)
+- `VPS`               — `user@host`, e.g. `root@1.2.3.4` (must already accept the user's SSH key without password)
 - `TELEGRAM_BOT_TOKEN`— from @BotFather
 - `OWNER_TELEGRAM_ID` — from @userinfobot
 
 DO NOT ask the user for any other keys (Jina, Deepgram, OpenRouter, GitHub).
 Those are collected later via the bot's `/start` wizard, in Telegram.
+
+If `ssh "$VPS" 'echo ok'` fails with a password prompt or permission denied,
+stop and tell the user to run `ssh-copy-id "$VPS"` first.
 
 ## Deployment
 
@@ -22,16 +23,14 @@ Run the installer script in non-interactive mode:
 
 ```bash
 ./bin/install \
-  --vps-ip "$VPS_IP" \
-  --ssh-user "$SSH_USER" \
-  --ssh-key "$SSH_KEY" \
+  --vps "$VPS" \
   --tg-token "$TELEGRAM_BOT_TOKEN" \
   --owner-id "$OWNER_TELEGRAM_ID"
 ```
 
 Verify success:
 ```bash
-ssh "$SSH_USER@$VPS_IP" docker ps | grep soroka-bot
+ssh "$VPS" docker ps | grep soroka-bot
 ```
 
 ## Hand-off
@@ -46,21 +45,23 @@ After successful deployment, tell the user:
 
 ```bash
 # Bot logs
-ssh "$SSH_USER@$VPS_IP" docker logs --tail 200 soroka-bot
+ssh "$VPS" docker logs --tail 200 soroka-bot
 
 # Setup wizard state
-ssh "$SSH_USER@$VPS_IP" \
+ssh "$VPS" \
   "sqlite3 /opt/soroka/data/soroka.db 'SELECT setup_step FROM owners'"
 
 # Note count
-ssh "$SSH_USER@$VPS_IP" \
+ssh "$VPS" \
   "sqlite3 /opt/soroka/data/soroka.db 'SELECT count(*) FROM notes'"
 ```
 
 ## Updating
 
+After `git pull` in the local clone:
+
 ```bash
-./bin/update "$VPS_IP" "$SSH_USER"
+./bin/update "$VPS"
 ```
 
 ## Architecture, in 60 seconds

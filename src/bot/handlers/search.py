@@ -1,4 +1,6 @@
 import logging
+import re
+
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
@@ -33,6 +35,8 @@ async def search_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     if not query_text.strip():
         return
 
+    await ctx.bot.send_chat_action(chat_id=msg.chat.id, action="typing")
+
     openrouter = OpenRouterClient(api_key=owner.openrouter_key)
     jina = JinaClient(api_key=owner.jina_api_key)
 
@@ -41,6 +45,7 @@ async def search_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         fallback=owner.fallback_model, query=query_text,
     )
 
+    await ctx.bot.send_chat_action(chat_id=msg.chat.id, action="typing")
     candidates = await hybrid_search(
         conn, jina=jina, owner_id=owner.telegram_id,
         clean_query=intent.clean_query, kind=intent.kind, limit=15,
@@ -49,6 +54,7 @@ async def search_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         await msg.reply_text("Не нашёл ничего. Попробуй уточнить запрос.")
         return
 
+    await ctx.bot.send_chat_action(chat_id=msg.chat.id, action="typing")
     reranked = await rerank(
         openrouter, primary=owner.primary_model, fallback=owner.fallback_model,
         query=intent.clean_query, candidates=candidates, top_k=5,
@@ -71,15 +77,48 @@ async def _query_text(msg, owner, ctx) -> str:
     return msg.text or ""
 
 
+_FILE_ID_TITLE_RE = re.compile(r"^(photo_|file_|document_)", re.IGNORECASE)
+
+
+def _clean_title(raw: str | None) -> str:
+    title = (raw or "").strip()
+    # File-id titles like "photo_AQADlhJrG72ZqEt-.jpg" carry no information.
+    if _FILE_ID_TITLE_RE.match(title):
+        return ""
+    return title[:80]
+
+
+def _clean_snippet(raw: str) -> str:
+    """OCR output is often visually noisy: 1-char lines, repeated blank
+    lines, leading punctuation. Squash that for display only — the raw
+    content stays in the DB unchanged."""
+    lines = []
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        # Drop orphan single-character lines (OCR artefacts: "к", "-", "=").
+        if len(s) <= 2 and not s.isalnum():
+            continue
+        if len(s) == 1:
+            continue
+        lines.append(s)
+    return " ".join(lines)
+
+
 def _format_hit(note) -> str:
     link = message_link(note.tg_chat_id, note.tg_message_id)
-    title = (note.title or "")[:80]
-    snippet = note.content[:200]
-    return f"📌 [{note.kind}] {title}\n{link}\n{snippet}"
+    title = _clean_title(note.title)
+    snippet = _clean_snippet(note.content)[:200]
+    label = title or "(без подписи)"
+    header = f"📌 [{note.kind}] {label}"
+    return f"{header}\n{link}\n{snippet}" if snippet else f"{header}\n{link}"
 
 
 def register_search_handlers(app: Application) -> None:
+    # group=1 so the setup wizard's text handler (group=0) gets the first
+    # crack at active steps; this handler picks up DMs once setup is 'done'.
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & ~filters.FORWARDED & ~filters.COMMAND,
         search_handler,
-    ))
+    ), group=1)

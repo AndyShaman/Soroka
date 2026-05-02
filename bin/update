@@ -1,5 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
-VPS="$1"
-SSH_USER="${2:-root}"
-ssh "$SSH_USER@$VPS" 'cd /opt/soroka && git pull && docker compose up -d --build'
+
+# Soroka updater — re-syncs the local repo to a VPS and rebuilds the container.
+# Usage: bin/update <user@host>
+# Prerequisite: bot already installed on this VPS via bin/install.
+
+VPS="${1:?usage: bin/update <user@host>}"
+
+if ! ssh "$VPS" 'sudo -n true' 2>/dev/null; then
+  echo "✗ Нужен sudo без пароля на $VPS (для записи в /opt/soroka)" >&2
+  exit 1
+fi
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+echo "→ Заливаю код из $REPO_DIR в /opt/soroka/ ..."
+rsync -az --delete --rsync-path='sudo rsync' \
+  --exclude='.git/' --exclude='data/' --exclude='attachments/' \
+  --exclude='__pycache__/' --exclude='.venv/' --exclude='*.pyc' \
+  --exclude='.pytest_cache/' --exclude='*.egg-info/' \
+  --exclude='dist/' --exclude='build/' --exclude='.env' \
+  --exclude='tests/fixtures/' --exclude='.DS_Store' \
+  "$REPO_DIR/" "$VPS:/opt/soroka/"
+
+echo "→ Пересобираю контейнер..."
+ssh "$VPS" 'cd /opt/soroka && \
+  sudo -n docker compose up -d --build && \
+  sudo -n cp scripts/soroka-mcp /usr/local/bin/ && \
+  sudo -n chmod +x /usr/local/bin/soroka-mcp'
+echo "✓ обновлено"

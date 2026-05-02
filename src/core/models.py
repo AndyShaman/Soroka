@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 
 NoteKind = Literal[
     "text", "voice", "youtube", "web", "pdf",
-    "docx", "xlsx", "image", "oversized",
+    "docx", "xlsx", "image", "post", "oversized",
 ]
 
 SetupStep = Literal[

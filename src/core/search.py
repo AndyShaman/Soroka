@@ -1,13 +1,18 @@
-import json
 import logging
 import sqlite3
 from typing import Optional
 
+from src.core.llm_json import parse_loose_json
 from src.core.notes import get_note
 from src.core.vec import search_similar
 from src.core.models import Note
 
 logger = logging.getLogger(__name__)
+
+# Probed empirically on Jina v3 1024-dim embeddings against Russian notes:
+# direct match ≈ 0.7-1.0, semantically related ≈ 1.0-1.25, unrelated ≥ 1.3.
+# 1.25 keeps "биотех → биохакер" (1.20) and cuts unrelated notes (1.33+).
+VEC_DISTANCE_MAX = 1.25
 
 
 async def hybrid_search(conn: sqlite3.Connection, *, jina, owner_id: int,
@@ -16,7 +21,7 @@ async def hybrid_search(conn: sqlite3.Connection, *, jina, owner_id: int,
     bm25_ids = _bm25(conn, owner_id, clean_query, kind, k=30)
     embedding = await jina.embed(clean_query, role="query")
     vec_pairs = search_similar(conn, embedding, limit=30)
-    vec_ids = [pair[0] for pair in vec_pairs]
+    vec_ids = [nid for nid, dist in vec_pairs if dist <= VEC_DISTANCE_MAX]
     fused = _rrf(bm25_ids, vec_ids)[:limit]
     notes = [get_note(conn, nid) for nid in fused]
     notes = [n for n in notes if n and n.owner_id == owner_id]
@@ -84,7 +89,9 @@ async def rerank(openrouter, primary: str, fallback: Optional[str],
             )}],
             max_tokens=200,
         )
-        ids = json.loads(raw)
+        ids = parse_loose_json(raw)
+        if not isinstance(ids, list):
+            raise ValueError(f"expected JSON array, got {type(ids).__name__}")
     except Exception as e:
         logger.warning("rerank failed (%s); using hybrid order", e)
         return candidates[:top_k]

@@ -1,5 +1,6 @@
 import logging
 
+from telegram import Update
 from telegram.ext import Application, ApplicationBuilder
 
 from src.core.db import open_db, init_schema
@@ -8,6 +9,14 @@ from src.bot.handlers.commands import register_command_handlers
 from src.bot.handlers.setup import register_setup_handlers
 from src.bot.handlers.channel import register_channel_handlers
 from src.bot.handlers.search import register_search_handlers
+
+ALLOWED_UPDATES = [
+    Update.MESSAGE,
+    Update.EDITED_MESSAGE,
+    Update.CHANNEL_POST,
+    Update.EDITED_CHANNEL_POST,
+    Update.CALLBACK_QUERY,
+]
 
 
 def build_app(settings, conn) -> Application:
@@ -31,7 +40,7 @@ def main():
     conn = open_db(settings.db_path)
     init_schema(conn)
     app = build_app(settings, conn)
-    app.run_polling()
+    app.run_polling(allowed_updates=ALLOWED_UPDATES)
 
 
 if __name__ == "__main__":
