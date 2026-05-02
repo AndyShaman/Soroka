@@ -1,6 +1,10 @@
+import logging
+
 from src.core.db import open_db, init_schema
 from src.core.owners import create_or_get_owner
-from src.core.notes import insert_note, get_note, list_recent_notes
+from src.core.notes import (
+    insert_note, get_note, list_recent_notes, find_note_id_by_message,
+)
 from src.core.models import Note
 
 def _fixture_conn(tmp_path):
@@ -25,6 +29,28 @@ def test_insert_note_dedupes_by_message(tmp_path):
     insert_note(conn, n)
     second_id = insert_note(conn, n)
     assert second_id is None  # duplicate
+
+
+def test_insert_note_logs_duplicate(tmp_path, caplog):
+    """Operators need to see duplicates in logs to distinguish them from
+    silent ingest bugs (e.g. unhandled kind, parse failure)."""
+    conn = _fixture_conn(tmp_path)
+    n = Note(owner_id=1, tg_message_id=10, tg_chat_id=-100,
+             kind="text", content="hello", created_at=1)
+    insert_note(conn, n)
+    with caplog.at_level(logging.INFO, logger="src.core.notes"):
+        insert_note(conn, n)
+    assert any("duplicate" in r.message for r in caplog.records)
+
+
+def test_find_note_id_by_message(tmp_path):
+    conn = _fixture_conn(tmp_path)
+    n = Note(owner_id=1, tg_message_id=10, tg_chat_id=-100,
+             kind="text", content="hello", created_at=1)
+    new_id = insert_note(conn, n)
+    assert find_note_id_by_message(conn, 1, -100, 10) == new_id
+    assert find_note_id_by_message(conn, 1, -100, 999) is None
+    assert find_note_id_by_message(conn, 2, -100, 10) is None  # different owner
 
 def test_list_recent_notes_orders_desc(tmp_path):
     conn = _fixture_conn(tmp_path)

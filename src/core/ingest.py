@@ -1,10 +1,13 @@
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Optional
 
 from src.core.kind import detect_kind_from_text
 from src.core.models import Note, Attachment
-from src.core.notes import insert_note
+from src.core.notes import (
+    insert_note, find_note_id_by_message, update_note_content,
+)
 from src.core.vec import upsert_embedding
 from src.core.attachments import insert_attachment
 from src.adapters.extractors.web import extract_web
@@ -13,10 +16,49 @@ from src.adapters.extractors.docx import extract_docx
 from src.adapters.extractors.xlsx import extract_xlsx
 from src.adapters.extractors.ocr import extract_ocr
 
+logger = logging.getLogger(__name__)
+
+
+async def _save_or_update_note(conn: sqlite3.Connection, *, jina,
+                                note: Note, is_edit: bool,
+                                embed_text: str) -> Optional[int]:
+    """Insert a new note or, on edit, update the existing one in place
+    and re-embed. Returns the resulting note id, or None if a new-post
+    insert lost a duplicate race."""
+    if is_edit:
+        existing_id = find_note_id_by_message(
+            conn, note.owner_id, note.tg_chat_id, note.tg_message_id,
+        )
+        if existing_id is not None:
+            update_note_content(
+                conn, existing_id,
+                kind=note.kind, title=note.title, content=note.content,
+                source_url=note.source_url, raw_caption=note.raw_caption,
+            )
+            if embed_text.strip():
+                embedding = await jina.embed(embed_text[:8000], role="passage")
+                upsert_embedding(conn, existing_id, embedding)
+            logger.info(
+                "note edited: id=%s owner=%s chat=%s msg=%s",
+                existing_id, note.owner_id, note.tg_chat_id, note.tg_message_id,
+            )
+            return existing_id
+        # Edit of a message we never saw (bot was offline) — fall through
+        # to a fresh insert.
+
+    note_id = insert_note(conn, note)
+    if note_id is None:
+        return None
+    if embed_text.strip():
+        embedding = await jina.embed(embed_text[:8000], role="passage")
+        upsert_embedding(conn, note_id, embedding)
+    return note_id
+
 
 async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
                       tg_chat_id: int, tg_message_id: int,
-                      text: str, caption: Optional[str], created_at: int) -> Optional[int]:
+                      text: str, caption: Optional[str], created_at: int,
+                      is_edit: bool = False) -> Optional[int]:
     if not text.strip():
         return None
     raw = text.strip()
@@ -43,12 +85,8 @@ async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
         kind=kind, title=title, content=body.strip(),
         source_url=source_url, raw_caption=caption, created_at=created_at,
     )
-    note_id = insert_note(conn, note)
-    if note_id is None:
-        return None
-    embedding = await jina.embed(body.strip()[:8000], role="passage")
-    upsert_embedding(conn, note_id, embedding)
-    return note_id
+    return await _save_or_update_note(conn, jina=jina, note=note,
+                                       is_edit=is_edit, embed_text=body.strip())
 
 
 def _make_title(text: str) -> str:
@@ -59,7 +97,8 @@ def _make_title(text: str) -> str:
 async def ingest_voice(conn: sqlite3.Connection, *, deepgram, jina,
                         owner_id: int, tg_chat_id: int, tg_message_id: int,
                         audio_bytes: bytes, mime: str,
-                        caption: Optional[str], created_at: int) -> Optional[int]:
+                        caption: Optional[str], created_at: int,
+                        is_edit: bool = False) -> Optional[int]:
     transcript = await deepgram.transcribe(audio_bytes, mime=mime)
     if not transcript.strip():
         return None
@@ -69,12 +108,8 @@ async def ingest_voice(conn: sqlite3.Connection, *, deepgram, jina,
         kind="voice", title=_make_title(transcript), content=transcript.strip(),
         raw_caption=caption, created_at=created_at,
     )
-    note_id = insert_note(conn, note)
-    if note_id is None:
-        return None
-    embedding = await jina.embed(transcript[:8000], role="passage")
-    upsert_embedding(conn, note_id, embedding)
-    return note_id
+    return await _save_or_update_note(conn, jina=jina, note=note,
+                                       is_edit=is_edit, embed_text=transcript)
 
 
 async def ingest_document(conn: sqlite3.Connection, *, jina, owner_id: int,
@@ -82,7 +117,8 @@ async def ingest_document(conn: sqlite3.Connection, *, jina, owner_id: int,
                           local_path: Optional[Path], original_name: str,
                           kind: str, file_size: int,
                           caption: Optional[str], created_at: int,
-                          is_oversized: bool) -> Optional[int]:
+                          is_oversized: bool,
+                          is_edit: bool = False) -> Optional[int]:
     if is_oversized:
         body = f"[oversized] {original_name} ({file_size} bytes)\n{caption or ''}"
         title = original_name
@@ -96,8 +132,22 @@ async def ingest_document(conn: sqlite3.Connection, *, jina, owner_id: int,
         body = extract_xlsx(local_path)
         title = original_name
     elif kind == "image":
-        body = extract_ocr(local_path) or original_name
+        ocr = extract_ocr(local_path) or ""
+        # Caption (user's own words) is the strongest semantic signal; OCR
+        # is supplementary and often noisy on stylized images.
+        parts = [p for p in (caption or "", ocr) if p.strip()]
+        body = "\n\n".join(parts) or original_name
         title = caption or original_name
+    elif kind == "post":
+        # Forwarded Telegram post: caption IS the content; the photo is
+        # just a link preview. OCR is rarely useful here (logos, hero
+        # images), so we add it only if it surfaced something readable.
+        ocr = extract_ocr(local_path) or ""
+        parts = [(caption or "").strip()]
+        if len(ocr.strip()) > 20:
+            parts.append(ocr.strip())
+        body = "\n\n".join(p for p in parts if p) or original_name
+        title = (caption or "").splitlines()[0][:80] if caption else original_name
     else:
         body = caption or original_name
         title = original_name
@@ -107,19 +157,21 @@ async def ingest_document(conn: sqlite3.Connection, *, jina, owner_id: int,
         kind=kind, title=title, content=body.strip() or original_name,
         raw_caption=caption, created_at=created_at,
     )
-    note_id = insert_note(conn, note)
+    embed_text = "" if is_oversized else body.strip()
+    note_id = await _save_or_update_note(
+        conn, jina=jina, note=note, is_edit=is_edit, embed_text=embed_text,
+    )
     if note_id is None:
         return None
 
-    insert_attachment(conn, Attachment(
-        note_id=note_id,
-        file_path=str(local_path) if local_path else "",
-        file_size=file_size,
-        original_name=original_name,
-        is_oversized=is_oversized,
-    ))
-
-    if not is_oversized and body.strip():
-        embedding = await jina.embed(body.strip()[:8000], role="passage")
-        upsert_embedding(conn, note_id, embedding)
+    # On edit the attachment row already exists from the original ingest;
+    # Telegram doesn't replace the file on caption edits.
+    if not is_edit:
+        insert_attachment(conn, Attachment(
+            note_id=note_id,
+            file_path=str(local_path) if local_path else "",
+            file_size=file_size,
+            original_name=original_name,
+            is_oversized=is_oversized,
+        ))
     return note_id
