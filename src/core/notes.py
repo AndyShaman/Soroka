@@ -85,7 +85,8 @@ def list_recent_notes(conn: sqlite3.Connection, owner_id: int, limit: int = 20,
     if kind is not None:
         cur = conn.execute(
             """SELECT id, owner_id, tg_message_id, tg_chat_id, kind, title, content,
-                      source_url, raw_caption, created_at
+                      source_url, raw_caption, created_at,
+                      COALESCE(thin_content, 0), deleted_at
                FROM notes WHERE owner_id = ? AND kind = ? AND deleted_at IS NULL
                ORDER BY created_at DESC LIMIT ?""",
             (owner_id, kind, limit),
@@ -93,13 +94,20 @@ def list_recent_notes(conn: sqlite3.Connection, owner_id: int, limit: int = 20,
     else:
         cur = conn.execute(
             """SELECT id, owner_id, tg_message_id, tg_chat_id, kind, title, content,
-                      source_url, raw_caption, created_at
+                      source_url, raw_caption, created_at,
+                      COALESCE(thin_content, 0), deleted_at
                FROM notes WHERE owner_id = ? AND deleted_at IS NULL
                ORDER BY created_at DESC LIMIT ?""",
             (owner_id, limit),
         )
-    fields = "id owner_id tg_message_id tg_chat_id kind title content source_url raw_caption created_at".split()
-    return [Note(**dict(zip(fields, row))) for row in cur.fetchall()]
+    fields = ("id owner_id tg_message_id tg_chat_id kind title content "
+              "source_url raw_caption created_at thin_content deleted_at").split()
+    out = []
+    for row in cur.fetchall():
+        data = dict(zip(fields, row))
+        data["thin_content"] = bool(data["thin_content"])
+        out.append(Note(**data))
+    return out
 
 
 def soft_delete_note(conn: sqlite3.Connection, note_id: int, *, reason: str) -> bool:

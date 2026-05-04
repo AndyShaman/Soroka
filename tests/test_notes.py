@@ -77,6 +77,30 @@ def test_list_recent_notes_filters_by_kind(tmp_path):
     assert [n.content for n in text_only] == ["text-note"]
 
 
+def test_list_recent_notes_preserves_thin_content(tmp_path):
+    """list_recent_notes must surface thin_content correctly so MCP/CLI
+    consumers don't get a silent rassinhron with the actual DB state."""
+    import time
+    conn = _fixture_conn(tmp_path)
+    insert_note(conn, Note(
+        owner_id=1, tg_message_id=1, tg_chat_id=1,
+        kind="post", title="thin", content="x",
+        source_url=None, raw_caption=None,
+        created_at=int(time.time()), thin_content=True,
+    ))
+    insert_note(conn, Note(
+        owner_id=1, tg_message_id=2, tg_chat_id=1,
+        kind="post", title="full", content="lots of content",
+        source_url=None, raw_caption=None,
+        created_at=int(time.time()), thin_content=False,
+    ))
+
+    notes = list_recent_notes(conn, owner_id=1, limit=10)
+    by_title = {n.title: n for n in notes}
+    assert by_title["thin"].thin_content is True
+    assert by_title["full"].thin_content is False
+
+
 def test_soft_delete_note_sets_deleted_at_and_get_returns_none(tmp_path):
     from src.core.notes import soft_delete_note
 
