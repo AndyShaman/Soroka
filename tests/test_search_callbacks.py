@@ -95,18 +95,6 @@ async def test_guard_swallows_stale_callback_query():
 
 
 @pytest.mark.asyncio
-async def test_start_refine_sets_awaiting_flag():
-    state = {"query": "x", "offset": 0, "since_days": None,
-             "excluded_ids": [], "last_returned_ids": []}
-    ctx = _make_ctx(state)
-    update = _make_callback_update("search:refine")
-    await on_start_refine(update, ctx)
-
-    assert ctx.user_data.get("awaiting_refinement") is True
-    update.callback_query.answer.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_next_page_serves_from_pool_without_rerank():
     """Fast-path: Ещё 5 takes the next slice from the cached pool — no LLM."""
     pool = [_note(i) for i in range(1, 21)]

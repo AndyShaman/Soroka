@@ -128,7 +128,7 @@ async def on_next_page(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     next_slice = pool[cursor:cursor + PAGE_SIZE]
     if not next_slice:
         await update.callback_query.edit_message_text(
-            "Больше из этого пула нет. Сменй период или уточни запрос.",
+            "Больше из этого пула нет. Смени период или уточни запрос.",
             reply_markup=make_keyboard(state),
             disable_web_page_preview=True,
         )
