@@ -67,3 +67,17 @@ def test_get_by_ids_empty_input_returns_empty(conn):
 def test_get_by_ids_raises_over_100(conn):
     with pytest.raises(ValueError, match="at most 100"):
         get_by_ids(conn, owner_id=42, ids=list(range(1, 102)))
+
+
+def test_get_by_ids_collapses_duplicates(conn):
+    _insert_note(conn, id=1, owner_id=42)
+    _insert_note(conn, id=2, owner_id=42)
+    result = get_by_ids(conn, owner_id=42, ids=[1, 2, 1, 2, 1])
+    assert [n.id for n in result] == [1, 2]
+
+
+def test_get_by_ids_accepts_exactly_100(conn):
+    for i in range(1, 101):
+        _insert_note(conn, id=i, owner_id=42)
+    result = get_by_ids(conn, owner_id=42, ids=list(range(1, 101)))
+    assert len(result) == 100

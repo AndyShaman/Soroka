@@ -6,7 +6,6 @@ isolation and the soft-delete filter are enforced inside every query;
 callers don't have to remember.
 """
 import sqlite3
-from typing import Optional
 
 from src.core.models import Note
 
@@ -35,8 +34,11 @@ def get_by_ids(
     owner_id: int,
     ids: list[int],
 ) -> list[Note]:
-    """Batch-load active notes by id. Cross-owner / deleted / missing ids
-    are silently dropped. Returns notes in the same order as `ids`."""
+    """Batch-load active notes by id. Cross-owner / deleted / missing ids are
+    silently dropped. Duplicates collapse — each unique id appears at most once
+    in the output, at the position of its first occurrence in `ids`. Returns
+    notes in input order. Caps input at MAX_BATCH_IDS (100) — raises ValueError
+    on overflow before deduplication, so 101 copies of the same id still raise."""
     if not ids:
         return []
     if len(ids) > MAX_BATCH_IDS:
@@ -50,4 +52,10 @@ def get_by_ids(
         (owner_id, *ids),
     )
     by_id = {row[0]: _row_to_note(row) for row in cur.fetchall()}
-    return [by_id[i] for i in ids if i in by_id]
+    seen: set[int] = set()
+    result: list[Note] = []
+    for i in ids:
+        if i in by_id and i not in seen:
+            result.append(by_id[i])
+            seen.add(i)
+    return result
