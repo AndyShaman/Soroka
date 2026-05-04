@@ -72,4 +72,5 @@ def test_export_excludes_soft_deleted_notes(tmp_path):
     ids = {n["id"] for n in data}
     assert keep in ids
     assert drop not in ids
-    assert all("thin_content" in n for n in data)  # new column exposed
+    for n in data:
+        assert n["thin_content"] in (0, 1)  # COALESCE keeps it numeric, not bool
