@@ -5,7 +5,7 @@ from src.bot.main import _setup_bot_menu
 
 
 @pytest.mark.asyncio
-async def test_setup_bot_menu_publishes_six_commands():
+async def test_setup_bot_menu_publishes_seven_commands():
     """post_init wires up the dropdown 'Меню' next to the input field."""
     app = MagicMock()
     app.bot.set_my_commands = AsyncMock()
