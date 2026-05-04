@@ -9,6 +9,7 @@ from src.bot.handlers.commands import register_command_handlers
 from src.bot.handlers.setup import register_setup_handlers
 from src.bot.handlers.channel import register_channel_handlers
 from src.bot.handlers.search import register_search_handlers
+from src.bot.handlers.search_callbacks import register_search_callbacks
 
 ALLOWED_UPDATES = [
     Update.MESSAGE,
@@ -28,6 +29,7 @@ def build_app(settings, conn) -> Application:
     register_command_handlers(app)
     register_channel_handlers(app)
     register_search_handlers(app)
+    register_search_callbacks(app)
     return app
 
 

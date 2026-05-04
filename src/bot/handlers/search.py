@@ -35,6 +35,12 @@ async def search_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     if not query_text.strip():
         return
 
+    # Refinement flow: if we asked the user to refine, treat this message as
+    # new query that piggybacks on the previous filters.
+    prev = ctx.user_data.get("last_search")
+    if ctx.user_data.pop("awaiting_refinement", False) and prev:
+        query_text = f"{prev['query']} {query_text}".strip()
+
     await ctx.bot.send_chat_action(chat_id=msg.chat.id, action="typing")
 
     openrouter = OpenRouterClient(api_key=owner.openrouter_key)
@@ -64,8 +70,21 @@ async def search_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     chunks = [_format_hit(n) for n in reranked]
-    await msg.reply_text("\n\n─────\n\n".join(chunks),
-                         disable_web_page_preview=True)
+    text = "\n\n─────\n\n".join(chunks)
+
+    new_state = {
+        "query": intent.clean_query,
+        "offset": 0,
+        "since_days": None,
+        "excluded_ids": [],
+        "last_returned_ids": [n.id for n in reranked],
+    }
+    ctx.user_data["last_search"] = new_state
+
+    from src.bot.handlers.search_callbacks import make_keyboard
+    await msg.reply_text(
+        text, reply_markup=make_keyboard(new_state), disable_web_page_preview=True,
+    )
 
 
 async def _query_text(msg, owner, ctx) -> str:
