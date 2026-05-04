@@ -116,3 +116,118 @@ def test_list_tools_advertises_new_params():
     assert "kind" in props
     assert "include_thin" in props
     assert any(t.name == "delete_note" for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_list_tools_includes_new_read_api():
+    from src.mcp.server import _build_tools
+    names = [t.name for t in _build_tools()]
+    for n in ("find_similar", "get_context", "get_by_ids", "stats"):
+        assert n in names
+
+
+@pytest.mark.asyncio
+async def test_search_tool_advertises_date_filters():
+    from src.mcp.server import _build_tools
+    search = next(t for t in _build_tools() if t.name == "search")
+    props = search.inputSchema["properties"]
+    assert "date_from" in props
+    assert "date_to" in props
+
+
+@pytest.mark.asyncio
+async def test_tool_get_by_ids_preserves_input_order(tmp_path):
+    import time
+    from src.core.db import open_db, init_schema
+    from src.core.owners import create_or_get_owner
+    from src.core.notes import insert_note
+    from src.core.models import Note
+    from src.mcp.server import tool_get_by_ids
+
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=42)
+    for i in (1, 2, 3):
+        insert_note(conn, Note(
+            owner_id=42, tg_message_id=i, tg_chat_id=-100,
+            kind="post", content=f"sample {i}", created_at=int(time.time()),
+        ))
+    out = await tool_get_by_ids(conn, owner_id=42, ids=[3, 1, 2])
+    assert [n["id"] for n in out] == [3, 1, 2]
+
+
+@pytest.mark.asyncio
+async def test_tool_get_context_returns_neighbors(tmp_path):
+    import time
+    from src.core.db import open_db, init_schema
+    from src.core.owners import create_or_get_owner
+    from src.core.notes import insert_note
+    from src.core.models import Note
+    from src.mcp.server import tool_get_context
+
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=42)
+    ids = []
+    for i in (100, 101, 102):
+        ids.append(insert_note(conn, Note(
+            owner_id=42, tg_message_id=i, tg_chat_id=-100,
+            kind="post", content=f"msg {i}", created_at=int(time.time()),
+        )))
+    # context around the middle one (id of 101): expect 100 and 102
+    out = await tool_get_context(conn, owner_id=42, note_id=ids[1], window=5)
+    assert sorted(n["tg_message_id"] for n in out) == [100, 102]
+
+
+@pytest.mark.asyncio
+async def test_tool_find_similar_returns_neighbor_list(tmp_path):
+    import time
+    from src.core.db import open_db, init_schema
+    from src.core.owners import create_or_get_owner
+    from src.core.notes import insert_note
+    from src.core.vec import upsert_embedding
+    from src.core.models import Note
+    from src.mcp.server import tool_find_similar
+
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=42)
+
+    src_id = insert_note(conn, Note(
+        owner_id=42, tg_message_id=1, tg_chat_id=-100,
+        kind="post", content="source", created_at=int(time.time()),
+    ))
+    upsert_embedding(conn, src_id, [1.0] * 1024)
+    near_id = insert_note(conn, Note(
+        owner_id=42, tg_message_id=2, tg_chat_id=-100,
+        kind="post", content="near", created_at=int(time.time()),
+    ))
+    upsert_embedding(conn, near_id, [1.01] * 1024)
+
+    out = await tool_find_similar(conn, owner_id=42, note_id=src_id, limit=5)
+    assert isinstance(out, list)
+    assert all("id" in n for n in out)
+    assert src_id not in [n["id"] for n in out]
+
+
+@pytest.mark.asyncio
+async def test_tool_stats_returns_iso_dates(tmp_path):
+    from src.core.db import open_db, init_schema
+    from src.core.owners import create_or_get_owner
+    from src.core.notes import insert_note
+    from src.core.models import Note
+    from src.mcp.server import tool_stats
+
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=42)
+    insert_note(conn, Note(
+        owner_id=42, tg_message_id=1, tg_chat_id=-100,
+        kind="post", content="x", created_at=1_700_000_000,
+    ))
+
+    out = await tool_stats(conn, owner_id=42)
+    assert out["total"] == 1
+    assert "by_kind" in out
+    assert isinstance(out["oldest_at"], str) and "T" in out["oldest_at"]
+    assert isinstance(out["newest_at"], str) and "T" in out["newest_at"]

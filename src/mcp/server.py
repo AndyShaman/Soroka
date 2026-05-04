@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -12,12 +13,45 @@ from src.adapters.openrouter import OpenRouterClient
 from src.core.db import open_db, init_schema
 from src.core.intent import parse_intent
 from src.core.links import message_link
+from src.core.neighbors import find_similar, get_context, get_by_ids
 from src.core.notes import get_note, list_recent_notes
 from src.core.owners import get_owner
 from src.core.search import hybrid_search, rerank
+from src.core.stats import compute_stats
 from src.core.attachments import list_attachments
 
 DB_PATH = Path("/app/data/soroka.db")
+
+
+def _note_to_dict(n) -> dict:
+    return {
+        "id": n.id,
+        "kind": n.kind,
+        "title": n.title,
+        "content": n.content,
+        "source_url": n.source_url,
+        "tg_message_id": n.tg_message_id,
+        "tg_chat_id": n.tg_chat_id,
+        "tg_link": message_link(n.tg_chat_id, n.tg_message_id),
+        "created_at": n.created_at,
+    }
+
+
+def _epoch_to_iso(epoch):
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
+def _iso_date_to_epoch(date_str, end_of_day: bool):
+    if not date_str:
+        return None
+    d = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    if end_of_day:
+        d = d.replace(hour=23, minute=59, second=59)
+    return int(d.timestamp())
 
 
 async def tool_search(conn: sqlite3.Connection, owner_id: int,
@@ -26,7 +60,9 @@ async def tool_search(conn: sqlite3.Connection, owner_id: int,
                       since_days: Optional[int] = None,
                       exclude_ids: Optional[list[int]] = None,
                       offset: int = 0,
-                      include_thin: bool = False) -> list[dict]:
+                      include_thin: bool = False,
+                      created_after: Optional[int] = None,
+                      created_before: Optional[int] = None) -> list[dict]:
     """Hybrid search exposed via MCP. Explicit `kind` / `since_days` /
     `exclude_ids` skip intent detection (saves tokens; agents already
     know what they want)."""
@@ -51,6 +87,7 @@ async def tool_search(conn: sqlite3.Connection, owner_id: int,
         clean_query=clean_query, kind=eff_kind, limit=15,
         since_days=since_days, exclude_ids=exclude_ids or [],
         offset=offset, include_thin=include_thin,
+        created_after=created_after, created_before=created_before,
     )
     reranked = await rerank(
         openrouter, primary=owner.primary_model, fallback=owner.fallback_model,
@@ -108,6 +145,38 @@ async def tool_delete_note(conn: sqlite3.Connection, *, note_id: int,
     return {"ok": ok, "note_id": note_id, "reason": reason}
 
 
+async def tool_find_similar(conn: sqlite3.Connection, owner_id: int,
+                            note_id: int, limit: int = 5) -> list[dict]:
+    notes = await find_similar(conn, owner_id=owner_id,
+                               note_id=note_id, limit=limit)
+    return [_note_to_dict(n) for n in notes]
+
+
+async def tool_get_context(conn: sqlite3.Connection, owner_id: int,
+                           note_id: int, window: int = 3) -> list[dict]:
+    notes = get_context(conn, owner_id=owner_id, note_id=note_id, window=window)
+    return [_note_to_dict(n) for n in notes]
+
+
+async def tool_get_by_ids(conn: sqlite3.Connection, owner_id: int,
+                          ids: list[int]) -> list[dict]:
+    notes = get_by_ids(conn, owner_id=owner_id, ids=ids)
+    return [_note_to_dict(n) for n in notes]
+
+
+async def tool_stats(conn: sqlite3.Connection, owner_id: int) -> dict:
+    s = compute_stats(conn, owner_id)
+    return {
+        "total": s.total,
+        "last_day": s.last_day,
+        "last_week": s.last_week,
+        "last_month": s.last_month,
+        "by_kind": s.by_kind,
+        "oldest_at": _epoch_to_iso(s.oldest_at),
+        "newest_at": _epoch_to_iso(s.newest_at),
+    }
+
+
 def _build_tools() -> list[Tool]:
     return [
         Tool(name="search",
@@ -126,6 +195,10 @@ def _build_tools() -> list[Tool]:
                  "include_thin": {"type": "boolean", "default": False,
                                   "description": "Include extractor-flagged "
                                                  "thin_content notes"},
+                 "date_from": {"type": "string",
+                               "description": "ISO YYYY-MM-DD (inclusive lower bound)"},
+                 "date_to": {"type": "string",
+                             "description": "ISO YYYY-MM-DD (inclusive upper bound)"},
              }, "required": ["query"]}),
         Tool(name="get_by_id", description="Fetch full note by id.",
              inputSchema={"type": "object", "properties": {
@@ -149,6 +222,30 @@ def _build_tools() -> list[Tool]:
                  "reason": {"type": "string",
                             "description": "Why this note is being deleted"},
              }, "required": ["note_id", "reason"]}),
+        Tool(name="find_similar",
+             description="Vector neighbors of a note. Excludes source, deleted, thin.",
+             inputSchema={"type": "object", "properties": {
+                 "note_id": {"type": "integer"},
+                 "limit": {"type": "integer", "minimum": 1, "maximum": 20,
+                           "default": 5},
+             }, "required": ["note_id"]}),
+        Tool(name="get_context",
+             description="Sibling messages in the same Telegram chat, "
+                         "+/-window around the note.",
+             inputSchema={"type": "object", "properties": {
+                 "note_id": {"type": "integer"},
+                 "window": {"type": "integer", "minimum": 1, "maximum": 10,
+                            "default": 3},
+             }, "required": ["note_id"]}),
+        Tool(name="get_by_ids",
+             description="Batch-load notes by id. Missing ids are silently dropped.",
+             inputSchema={"type": "object", "properties": {
+                 "ids": {"type": "array", "items": {"type": "integer"},
+                         "minItems": 1, "maxItems": 100},
+             }, "required": ["ids"]}),
+        Tool(name="stats",
+             description="Aggregate stats: totals, time windows, by-kind breakdown.",
+             inputSchema={"type": "object", "properties": {}}),
     ]
 
 
@@ -171,6 +268,10 @@ def _server(conn: sqlite3.Connection, owner_id: int) -> Server:
                 exclude_ids=args.get("exclude_ids"),
                 offset=args.get("offset", 0),
                 include_thin=args.get("include_thin", False),
+                created_after=_iso_date_to_epoch(args.get("date_from"),
+                                                 end_of_day=False),
+                created_before=_iso_date_to_epoch(args.get("date_to"),
+                                                  end_of_day=True),
             )
         elif name == "get_by_id":
             data = await tool_get_by_id(conn, args["note_id"])
@@ -187,6 +288,20 @@ def _server(conn: sqlite3.Connection, owner_id: int) -> Server:
             data = await tool_delete_note(
                 conn, note_id=args["note_id"], reason=args["reason"],
             )
+        elif name == "find_similar":
+            data = await tool_find_similar(
+                conn, owner_id, args["note_id"],
+                limit=args.get("limit", 5),
+            )
+        elif name == "get_context":
+            data = await tool_get_context(
+                conn, owner_id, args["note_id"],
+                window=args.get("window", 3),
+            )
+        elif name == "get_by_ids":
+            data = await tool_get_by_ids(conn, owner_id, args["ids"])
+        elif name == "stats":
+            data = await tool_stats(conn, owner_id)
         else:
             data = {"error": "unknown tool"}
         return [TextContent(type="text", text=json.dumps(data, ensure_ascii=False))]
