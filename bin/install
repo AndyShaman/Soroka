@@ -222,6 +222,15 @@ if (( NEED_COMPOSE )); then
     -o /usr/local/lib/docker/cli-plugins/docker-compose
   sudo -n chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 fi
+
+# Claude Desktop вызывает /usr/local/bin/soroka-mcp по SSH под текущим юзером
+# и тот делает `docker exec` без sudo. Если юзер не в группе docker — отказ
+# на /var/run/docker.sock. Идемпотентно добавляем в группу. Свежая SSH-сессия
+# (новый коннект Claude Desktop) подхватит автоматически — релогин не нужен.
+if ! id -nG | grep -qw docker; then
+  echo "  добавляю $(id -un) в группу docker (для soroka-mcp без sudo)..."
+  sudo -n usermod -aG docker "$(id -un)"
+fi
 INSTALL_DEPS
 echo "  ✓ зависимости готовы"
 

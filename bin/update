@@ -36,6 +36,16 @@ rsync -az --delete --rsync-path='sudo rsync' \
   --exclude='tests/fixtures/' --exclude='.DS_Store' \
   "$REPO_DIR/" "$VPS:/opt/soroka/"
 
+# Старые установки (до коммита, добавившего usermod в bin/install) могли
+# оставить ssh-юзера вне группы docker. soroka-mcp запускает `docker exec`
+# без sudo, и Claude Desktop падает на /var/run/docker.sock — фиксим здесь
+# идемпотентно для обратной совместимости.
+echo "→ Проверяю членство в группе docker..."
+ssh "$VPS" 'if ! id -nG | grep -qw docker; then
+  echo "  добавляю $(id -un) в группу docker..."
+  sudo -n usermod -aG docker "$(id -un)"
+fi'
+
 echo "→ Прописываю SOROKA_VPS_USER/SOROKA_VPS_HOST в .env на сервере..."
 # Idempotent upsert: drop any prior SOROKA_VPS_* lines, then append the
 # current values. Bot reads them at startup and writes into the DB only if
