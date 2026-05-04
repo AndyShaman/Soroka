@@ -12,6 +12,20 @@ if ! ssh "$VPS" 'sudo -n true' 2>/dev/null; then
   exit 1
 fi
 
+# Resolve VPS user/host from the local ssh config so the bot can autopopulate
+# the MCP config without a manual /setvps step. ssh -G expands the alias and
+# prints the effective `user`/`hostname`. We push BOTH the resolved user and
+# the literal alias the operator typed — Claude Desktop will read the alias
+# from the user's ~/.ssh/config too, so the alias is what we want in the JSON.
+VPS_HOST_ALIAS="${VPS#*@}"
+VPS_HOST_ALIAS="${VPS_HOST_ALIAS%%:*}"
+SSH_USER="$(ssh -G "$VPS" 2>/dev/null | awk '/^user /{print $2; exit}')"
+if [[ -z "${SSH_USER:-}" ]]; then
+  echo "✗ Не удалось определить ssh user для $VPS — обнови ~/.ssh/config" >&2
+  exit 1
+fi
+echo "→ MCP-конфиг будет ссылаться на ${SSH_USER}@${VPS_HOST_ALIAS}"
+
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 echo "→ Заливаю код из $REPO_DIR в /opt/soroka/ ..."
 rsync -az --delete --rsync-path='sudo rsync' \
@@ -21,6 +35,20 @@ rsync -az --delete --rsync-path='sudo rsync' \
   --exclude='dist/' --exclude='build/' --exclude='.env' \
   --exclude='tests/fixtures/' --exclude='.DS_Store' \
   "$REPO_DIR/" "$VPS:/opt/soroka/"
+
+echo "→ Прописываю SOROKA_VPS_USER/SOROKA_VPS_HOST в .env на сервере..."
+# Idempotent upsert: drop any prior SOROKA_VPS_* lines, then append the
+# current values. Bot reads them at startup and writes into the DB only if
+# the corresponding column is empty — manual /setvps still wins.
+ssh "$VPS" "sudo -n bash -c \"
+  set -euo pipefail
+  cd /opt/soroka
+  touch .env
+  grep -vE '^SOROKA_VPS_(USER|HOST)=' .env > .env.new || true
+  echo 'SOROKA_VPS_USER=${SSH_USER}' >> .env.new
+  echo 'SOROKA_VPS_HOST=${VPS_HOST_ALIAS}' >> .env.new
+  mv .env.new .env
+\""
 
 echo "→ Пересобираю контейнер..."
 ssh "$VPS" 'cd /opt/soroka && \

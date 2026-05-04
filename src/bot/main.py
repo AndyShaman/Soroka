@@ -5,6 +5,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application, ApplicationBuilder
 
 from src.core.db import open_db, init_schema
+from src.core.owners import create_or_get_owner, seed_vps_from_env
 from src.core.settings import load_settings
 from src.bot.handlers.commands import register_command_handlers
 from src.bot.handlers.setup import register_setup_handlers
@@ -67,6 +68,8 @@ def main():
     settings = load_settings()
     conn = open_db(settings.db_path)
     init_schema(conn)
+    create_or_get_owner(conn, telegram_id=settings.owner_telegram_id)
+    seed_vps_from_env(conn, settings.owner_telegram_id)
     app = build_app(settings, conn)
     app.run_polling(allowed_updates=ALLOWED_UPDATES)
 

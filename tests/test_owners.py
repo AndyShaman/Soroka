@@ -2,6 +2,7 @@ import pytest
 from src.core.db import open_db, init_schema
 from src.core.owners import (
     create_or_get_owner, get_owner, update_owner_field, advance_setup_step,
+    seed_vps_from_env,
 )
 
 def test_create_or_get_owner_inserts_once(tmp_path):
@@ -39,3 +40,41 @@ def test_get_owner_returns_none_for_missing(tmp_path):
     conn = open_db(str(tmp_path / "x.db"))
     init_schema(conn)
     assert get_owner(conn, 9999) is None
+
+
+def test_seed_vps_from_env_writes_when_db_empty(tmp_path, monkeypatch):
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=42)
+    monkeypatch.setenv("SOROKA_VPS_USER", "ubuntu")
+    monkeypatch.setenv("SOROKA_VPS_HOST", "myvps")
+    seed_vps_from_env(conn, 42)
+    o = get_owner(conn, 42)
+    assert o.vps_user == "ubuntu"
+    assert o.vps_host == "myvps"
+
+
+def test_seed_vps_from_env_does_not_overwrite_existing(tmp_path, monkeypatch):
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=42)
+    update_owner_field(conn, 42, "vps_user", "manual")
+    update_owner_field(conn, 42, "vps_host", "manual.example")
+    monkeypatch.setenv("SOROKA_VPS_USER", "ubuntu")
+    monkeypatch.setenv("SOROKA_VPS_HOST", "myvps")
+    seed_vps_from_env(conn, 42)
+    o = get_owner(conn, 42)
+    assert o.vps_user == "manual"
+    assert o.vps_host == "manual.example"
+
+
+def test_seed_vps_from_env_noop_when_env_missing(tmp_path, monkeypatch):
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=42)
+    monkeypatch.delenv("SOROKA_VPS_USER", raising=False)
+    monkeypatch.delenv("SOROKA_VPS_HOST", raising=False)
+    seed_vps_from_env(conn, 42)
+    o = get_owner(conn, 42)
+    assert o.vps_user is None
+    assert o.vps_host is None

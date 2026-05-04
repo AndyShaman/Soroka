@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import time
 from typing import Optional
@@ -54,3 +55,20 @@ def update_owner_field(conn: sqlite3.Connection, telegram_id: int, field: str, v
 
 def advance_setup_step(conn: sqlite3.Connection, telegram_id: int, step: SetupStep) -> None:
     update_owner_field(conn, telegram_id, "setup_step", step)
+
+
+def seed_vps_from_env(conn: sqlite3.Connection, telegram_id: int) -> None:
+    """Populate vps_user/vps_host from SOROKA_VPS_USER/SOROKA_VPS_HOST env vars
+    so /mcp works out of the box after `bin/update`. A manual /setvps still
+    wins: we only write fields that are currently empty in the DB."""
+    user = (os.environ.get("SOROKA_VPS_USER") or "").strip()
+    host = (os.environ.get("SOROKA_VPS_HOST") or "").strip()
+    if not user or not host:
+        return
+    owner = get_owner(conn, telegram_id)
+    if owner is None:
+        return
+    if not owner.vps_user:
+        update_owner_field(conn, telegram_id, "vps_user", user)
+    if not owner.vps_host:
+        update_owner_field(conn, telegram_id, "vps_host", host)
