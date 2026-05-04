@@ -32,7 +32,7 @@ HELP_TEXT = (
     "/setvps — задать IP/юзера VPS (для /mcp)\n"
     "/setinbox — сменить канал-инбокс\n"
     "/export — выгрузить базу архивом\n"
-    "/mcp — конфиг для Claude Desktop\n"
+    "/mcp — конфиг для MCP-сервера\n"
     "/cancel — прервать текущий мастер"
 )
 
