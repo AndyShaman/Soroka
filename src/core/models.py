@@ -39,6 +39,8 @@ class Note(BaseModel):
     source_url: Optional[str] = None
     raw_caption: Optional[str] = None
     created_at: int
+    thin_content: bool = False
+    deleted_at: Optional[int] = None
 
 
 class Attachment(BaseModel):

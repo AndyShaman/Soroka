@@ -77,6 +77,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec USING vec0(
 """
 
 
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    cur = conn.execute(f"PRAGMA table_info({table})")
+    return any(row[1] == column for row in cur.fetchall())
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Idempotent column additions for live databases. SQLite ALTER TABLE
+    cannot add UNIQUE/CHECK retroactively but bare columns are fine and
+    cheap on tables of any size (metadata-only operation)."""
+    if not _column_exists(conn, "notes", "thin_content"):
+        conn.execute("ALTER TABLE notes ADD COLUMN thin_content INTEGER DEFAULT 0")
+    if not _column_exists(conn, "notes", "deleted_at"):
+        conn.execute("ALTER TABLE notes ADD COLUMN deleted_at INTEGER DEFAULT NULL")
+    conn.commit()
+
+
 def open_db(path: str) -> sqlite3.Connection:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -92,3 +108,4 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     conn.executescript(VEC_TABLE)
     conn.commit()
+    _migrate(conn)
