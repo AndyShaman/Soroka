@@ -15,6 +15,7 @@ import logging
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest
 from telegram.ext import Application, CallbackQueryHandler, ContextTypes
 
 from src.adapters.jina import JinaClient
@@ -43,8 +44,9 @@ def make_keyboard(state: dict) -> InlineKeyboardMarkup:
     ]])
 
 
-async def _rerun_and_format(ctx, state: dict) -> tuple[str, list[int]]:
-    """Run hybrid_search + rerank with current state, return (text, ids)."""
+async def _rebuild_pool_and_render(ctx, state: dict) -> tuple[str, list]:
+    """Slow-path: rerun hybrid_search + rerank with current state filters,
+    refresh the pool, return the first PAGE_SIZE rendered. Returns (text, pool)."""
     settings = ctx.application.bot_data["settings"]
     conn = ctx.application.bot_data["conn"]
     owner = get_owner(conn, settings.owner_telegram_id)
@@ -57,23 +59,23 @@ async def _rerun_and_format(ctx, state: dict) -> tuple[str, list[int]]:
     candidates = await hybrid_search(
         conn, jina=jina, owner_id=owner.telegram_id,
         clean_query=state["query"], kind=None,
-        limit=PAGE_SIZE,
+        limit=20,
         since_days=state.get("since_days"),
         exclude_ids=state.get("excluded_ids") or [],
-        offset=state.get("offset", 0),
     )
     if not candidates:
         return ("Больше ничего не нашёл с этими фильтрами.", [])
 
     reranked = await rerank(
         openrouter, primary=owner.primary_model, fallback=owner.fallback_model,
-        query=state["query"], candidates=candidates, top_k=PAGE_SIZE,
+        query=state["query"], candidates=candidates, top_k=20,
     )
     if not reranked:
         return ("Не нашёл релевантного.", [])
 
-    chunks = [_format_hit(n) for n in reranked]
-    return ("\n\n─────\n\n".join(chunks), [n.id for n in reranked])
+    first_page = reranked[:PAGE_SIZE]
+    text = "\n\n─────\n\n".join(_format_hit(n) for n in first_page)
+    return (text, reranked)
 
 
 def _format_hit(note) -> str:
@@ -90,14 +92,31 @@ def _format_hit(note) -> str:
 async def _guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Optional[dict]:
     settings = ctx.application.bot_data["settings"]
     if not is_owner(update.effective_user.id, settings.owner_telegram_id):
-        await update.callback_query.answer()
+        await _safe_answer(update.callback_query)
         return None
     state = ctx.user_data.get("last_search")
     if not state:
-        await update.callback_query.answer("Поиск устарел — начни новый.")
+        await _safe_answer(update.callback_query, "Поиск устарел — начни новый.")
         return None
-    await update.callback_query.answer()
+    ok = await _safe_answer(update.callback_query)
+    if not ok:
+        return None
     return state
+
+
+async def _safe_answer(callback_query, text: Optional[str] = None) -> bool:
+    """answer() can fail with BadRequest if the query expired (>15s).
+    Swallow that — the user already sees no spinner anyway.
+    Returns True on success, False if the query was stale."""
+    try:
+        if text is None:
+            await callback_query.answer()
+        else:
+            await callback_query.answer(text)
+        return True
+    except BadRequest as e:
+        logger.info("stale callback_query.answer ignored: %s", e)
+        return False
 
 
 async def on_next_page(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -129,9 +148,19 @@ async def on_toggle_period(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
     cur = state.get("since_days")
     idx = PERIODS.index(cur) if cur in PERIODS else 0
     state["since_days"] = PERIODS[(idx + 1) % len(PERIODS)]
-    state["offset"] = 0
-    text, returned_ids = await _rerun_and_format(ctx, state)
-    state["last_returned_ids"] = returned_ids
+
+    # Mid-state edit: show «Ищу…» so the user sees instant feedback.
+    await update.callback_query.edit_message_text(
+        "🔍 Ищу с новым периодом…", reply_markup=None,
+    )
+    await ctx.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action="typing",
+    )
+
+    text, pool = await _rebuild_pool_and_render(ctx, state)
+    state["pool"] = pool
+    state["cursor"] = min(PAGE_SIZE, len(pool))
+    state["shown_ids"] = [n.id for n in pool[:PAGE_SIZE]]
     await update.callback_query.edit_message_text(
         text, reply_markup=make_keyboard(state), disable_web_page_preview=True,
     )
