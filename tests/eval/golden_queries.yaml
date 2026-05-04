@@ -1,0 +1,8 @@
+# Each entry: a query the user actually ran, and the note IDs that
+# manual SQL inspection confirms must appear in top-5. Owner of the
+# DB the runner queries must own these note IDs.
+#
+# To populate: run `sqlite3 /app/data/soroka.db` on the VPS, find the
+# right note via LIKE, copy its id here, and add the query you'd type.
+- query: "пример запрос"
+  expected_ids: [1]
