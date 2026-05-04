@@ -274,3 +274,32 @@ async def test_hybrid_search_since_days(tmp_path, monkeypatch):
     ids = {n.id for n in notes}
     assert old not in ids
     assert new in ids
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_recency_tie_break(tmp_path, monkeypatch):
+    """When two notes have identical text (same BM25 + same dense distance),
+    the more recent one ranks higher because of recency boost."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+    import time
+    now = int(time.time())
+    old = insert_note(conn, Note(
+        owner_id=1, tg_chat_id=-1, tg_message_id=1, kind="text",
+        title="", content="redfish blue planet skill",
+        raw_caption=None, created_at=now - 365 * 86400,
+    ))
+    new = insert_note(conn, Note(
+        owner_id=1, tg_chat_id=-1, tg_message_id=2, kind="text",
+        title="", content="redfish blue planet skill",
+        raw_caption=None, created_at=now - 1 * 86400,
+    ))
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+    notes = await hybrid_search(
+        conn, jina=fake_jina, owner_id=1,
+        clean_query="redfish blue planet skill", kind=None, limit=5,
+    )
+    ids = [n.id for n in notes]
+    assert ids.index(new) < ids.index(old)

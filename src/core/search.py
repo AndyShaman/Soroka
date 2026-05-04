@@ -16,6 +16,44 @@ logger = logging.getLogger(__name__)
 # 1.25 keeps "биотех → биохакер" (1.20) and cuts unrelated notes (1.33+).
 VEC_DISTANCE_MAX = 1.25
 
+RRF_K = 60
+W_BM25 = 0.4
+W_VEC = 0.4
+W_RECENCY = 0.2
+RECENCY_HALFLIFE_DAYS = 180
+
+
+def _rrf_score(rank: int, k: int = RRF_K) -> float:
+    return 1.0 / (k + rank + 1)
+
+
+def _recency_score(created_at: int, now: int) -> float:
+    """Smooth decay so a 6-month-old note has half the boost of a fresh one.
+    Hardcoded vs configurable: keep it static until eval suite shows we
+    need to tune it. recency_score in [0, 1]."""
+    age_days = max(0, (now - created_at) / 86400)
+    return 1.0 / (1.0 + age_days / RECENCY_HALFLIFE_DAYS)
+
+
+def _fuse_with_recency(conn: sqlite3.Connection,
+                       bm25_ids: list[int], vec_ids: list[int],
+                       now: int) -> list[int]:
+    """Combine BM25 + dense via RRF, then add a recency component
+    weighted at 0.2. Returns ids sorted by combined score desc."""
+    scores: dict[int, float] = {}
+    for rank, nid in enumerate(bm25_ids):
+        scores[nid] = scores.get(nid, 0.0) + W_BM25 * _rrf_score(rank)
+    for rank, nid in enumerate(vec_ids):
+        scores[nid] = scores.get(nid, 0.0) + W_VEC * _rrf_score(rank)
+    if scores:
+        ids_csv = ",".join(str(i) for i in scores.keys())
+        rows = conn.execute(
+            f"SELECT id, created_at FROM notes WHERE id IN ({ids_csv})"
+        ).fetchall()
+        for nid, created_at in rows:
+            scores[nid] = scores.get(nid, 0.0) + W_RECENCY * _recency_score(created_at, now)
+    return [nid for nid, _ in sorted(scores.items(), key=lambda x: -x[1])]
+
 _TRACKING_PARAMS = {
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
     "fbclid", "gclid", "yclid", "ref",
@@ -78,7 +116,8 @@ async def hybrid_search(conn: sqlite3.Connection, *, jina, owner_id: int,
     embedding = await jina.embed(clean_query, role="query")
     vec_pairs = search_similar(conn, embedding, limit=30)
     vec_ids = [nid for nid, dist in vec_pairs if dist <= VEC_DISTANCE_MAX]
-    fused = _rrf(bm25_ids, vec_ids)
+    now = int(time.time())
+    fused = _fuse_with_recency(conn, bm25_ids, vec_ids, now)
 
     excl = set(exclude_ids or [])
     notes: list[Note] = []
@@ -95,7 +134,7 @@ async def hybrid_search(conn: sqlite3.Connection, *, jina, owner_id: int,
         if not include_thin and n.thin_content:
             continue
         if since_days is not None:
-            cutoff = int(time.time()) - since_days * 86400
+            cutoff = now - since_days * 86400
             if n.created_at < cutoff:
                 continue
         notes.append(n)
