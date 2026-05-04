@@ -103,7 +103,9 @@ async def hybrid_search(conn: sqlite3.Connection, *, jina, owner_id: int,
                         since_days: Optional[int] = None,
                         exclude_ids: Optional[list[int]] = None,
                         offset: int = 0,
-                        include_thin: bool = False) -> list[Note]:
+                        include_thin: bool = False,
+                        created_after: Optional[int] = None,
+                        created_before: Optional[int] = None) -> list[Note]:
     """Hybrid BM25 + dense search with filters and source diversification.
 
     since_days   : only notes created within N days of now
@@ -113,7 +115,8 @@ async def hybrid_search(conn: sqlite3.Connection, *, jina, owner_id: int,
                    (default False — thin notes are functionally empty)
     """
     bm25_ids = _bm25(conn, owner_id, clean_query, kind, k=30,
-                     since_days=since_days, include_thin=include_thin)
+                     since_days=since_days, include_thin=include_thin,
+                     created_after=created_after, created_before=created_before)
     embedding = await jina.embed(clean_query, role="query")
     vec_pairs = search_similar(conn, embedding, limit=30)
     vec_ids = [nid for nid, dist in vec_pairs if dist <= VEC_DISTANCE_MAX]
@@ -138,6 +141,10 @@ async def hybrid_search(conn: sqlite3.Connection, *, jina, owner_id: int,
             cutoff = now - since_days * 86400
             if n.created_at < cutoff:
                 continue
+        if created_after is not None and n.created_at < created_after:
+            continue
+        if created_before is not None and n.created_at > created_before:
+            continue
         notes.append(n)
 
     diversified = _diversify_by_source(notes, max_per_url=2)
@@ -147,7 +154,9 @@ async def hybrid_search(conn: sqlite3.Connection, *, jina, owner_id: int,
 def _bm25(conn: sqlite3.Connection, owner_id: int,
           query: str, kind: Optional[str], k: int,
           since_days: Optional[int] = None,
-          include_thin: bool = False) -> list[int]:
+          include_thin: bool = False,
+          created_after: Optional[int] = None,
+          created_before: Optional[int] = None) -> list[int]:
     sql = """SELECT n.id
              FROM notes_fts
              JOIN notes n ON n.id = notes_fts.rowid
@@ -162,6 +171,12 @@ def _bm25(conn: sqlite3.Connection, owner_id: int,
     if since_days is not None:
         sql += " AND n.created_at >= ?"
         params.append(int(time.time()) - since_days * 86400)
+    if created_after is not None:
+        sql += " AND n.created_at >= ?"
+        params.append(created_after)
+    if created_before is not None:
+        sql += " AND n.created_at <= ?"
+        params.append(created_before)
     sql += " ORDER BY rank LIMIT ?"
     params.append(k)
     return [row[0] for row in conn.execute(sql, params).fetchall()]

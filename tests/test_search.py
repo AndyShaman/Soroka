@@ -330,3 +330,169 @@ async def test_hybrid_search_recency_tie_break(tmp_path, monkeypatch):
     )
     ids = [n.id for n in notes]
     assert ids.index(new) < ids.index(old)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_created_after_filters_old(tmp_path):
+    import time as _time
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    now = int(_time.time())
+    DAY = 86400
+    vec = [1.0, 0.0] + [0.0] * 1022
+
+    old_id = insert_note(conn, Note(
+        owner_id=1, tg_message_id=1, tg_chat_id=-1,
+        kind="text", content="kettlebell technique",
+        created_at=now - 60 * DAY,
+    ))
+    upsert_embedding(conn, old_id, vec)
+    new_id = insert_note(conn, Note(
+        owner_id=1, tg_message_id=2, tg_chat_id=-1,
+        kind="text", content="kettlebell technique",
+        created_at=now - 1 * DAY,
+    ))
+    upsert_embedding(conn, new_id, vec)
+
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=vec)
+
+    hits = await hybrid_search(
+        conn, jina=fake_jina, owner_id=1, clean_query="kettlebell",
+        kind=None, limit=10, created_after=now - 7 * DAY,
+    )
+    ids = {h.id for h in hits}
+    assert new_id in ids
+    assert old_id not in ids
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_created_before_filters_new(tmp_path):
+    import time as _time
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    now = int(_time.time())
+    DAY = 86400
+    vec = [1.0, 0.0] + [0.0] * 1022
+
+    old_id = insert_note(conn, Note(
+        owner_id=1, tg_message_id=1, tg_chat_id=-1,
+        kind="text", content="kettlebell technique",
+        created_at=now - 60 * DAY,
+    ))
+    upsert_embedding(conn, old_id, vec)
+    new_id = insert_note(conn, Note(
+        owner_id=1, tg_message_id=2, tg_chat_id=-1,
+        kind="text", content="kettlebell technique",
+        created_at=now - 1 * DAY,
+    ))
+    upsert_embedding(conn, new_id, vec)
+
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=vec)
+
+    hits = await hybrid_search(
+        conn, jina=fake_jina, owner_id=1, clean_query="kettlebell",
+        kind=None, limit=10, created_before=now - 7 * DAY,
+    )
+    ids = {h.id for h in hits}
+    assert old_id in ids
+    assert new_id not in ids
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_date_range_intersects(tmp_path):
+    import time as _time
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    now = int(_time.time())
+    DAY = 86400
+    vec = [1.0, 0.0] + [0.0] * 1022
+
+    very_old = insert_note(conn, Note(
+        owner_id=1, tg_message_id=1, tg_chat_id=-1,
+        kind="text", content="kettlebell technique",
+        created_at=now - 60 * DAY,
+    ))
+    upsert_embedding(conn, very_old, vec)
+    middle = insert_note(conn, Note(
+        owner_id=1, tg_message_id=2, tg_chat_id=-1,
+        kind="text", content="kettlebell technique",
+        created_at=now - 20 * DAY,
+    ))
+    upsert_embedding(conn, middle, vec)
+    recent = insert_note(conn, Note(
+        owner_id=1, tg_message_id=3, tg_chat_id=-1,
+        kind="text", content="kettlebell technique",
+        created_at=now - 1 * DAY,
+    ))
+    upsert_embedding(conn, recent, vec)
+
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=vec)
+
+    hits = await hybrid_search(
+        conn, jina=fake_jina, owner_id=1, clean_query="kettlebell",
+        kind=None, limit=10,
+        created_after=now - 30 * DAY,
+        created_before=now - 7 * DAY,
+    )
+    ids = {h.id for h in hits}
+    assert middle in ids
+    assert very_old not in ids
+    assert recent not in ids
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_since_days_and_created_after_intersect(tmp_path):
+    """When both since_days and created_after are given, the most-restrictive
+    bound wins (AND, not OR)."""
+    import time as _time
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    now = int(_time.time())
+    DAY = 86400
+    vec = [1.0, 0.0] + [0.0] * 1022
+
+    n_45 = insert_note(conn, Note(
+        owner_id=1, tg_message_id=1, tg_chat_id=-1,
+        kind="text", content="kettlebell technique",
+        created_at=now - 45 * DAY,
+    ))
+    upsert_embedding(conn, n_45, vec)
+    n_20 = insert_note(conn, Note(
+        owner_id=1, tg_message_id=2, tg_chat_id=-1,
+        kind="text", content="kettlebell technique",
+        created_at=now - 20 * DAY,
+    ))
+    upsert_embedding(conn, n_20, vec)
+    n_1 = insert_note(conn, Note(
+        owner_id=1, tg_message_id=3, tg_chat_id=-1,
+        kind="text", content="kettlebell technique",
+        created_at=now - 1 * DAY,
+    ))
+    upsert_embedding(conn, n_1, vec)
+
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=vec)
+
+    # since_days=60 alone -> all three; created_after=now-30d alone -> n_20+n_1.
+    # Together (AND): only the intersection = n_20 + n_1.
+    hits = await hybrid_search(
+        conn, jina=fake_jina, owner_id=1, clean_query="kettlebell",
+        kind=None, limit=10,
+        since_days=60,
+        created_after=now - 30 * DAY,
+    )
+    ids = {h.id for h in hits}
+    assert n_20 in ids
+    assert n_1 in ids
+    assert n_45 not in ids
