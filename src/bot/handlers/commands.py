@@ -88,6 +88,20 @@ async def cancel_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text("Отменено.")
 
 
+async def reset_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Clear all dialog state without touching the database. Used when the
+    user feels stuck (mid-wizard, awaiting refinement, stale search)."""
+    settings = ctx.application.bot_data["settings"]
+    if not is_owner(update.effective_user.id, settings.owner_telegram_id):
+        return
+    ctx.user_data.pop("pending_set", None)
+    ctx.user_data.pop("last_search", None)
+    ctx.user_data.pop("awaiting_refinement", None)
+    await update.message.reply_text(
+        "✓ Сброшено. Можешь искать или менять настройки."
+    )
+
+
 PENDING_PROMPTS = {
     "jina":      ("jina_api_key", "Пришли новый ключ Jina."),
     "deepgram":  ("deepgram_api_key", "Пришли новый ключ Deepgram."),
@@ -272,6 +286,7 @@ def register_command_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
+    app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(CommandHandler("mcp", mcp_command))
     app.add_handler(CommandHandler("export", export_command))
     for kind in PENDING_PROMPTS:
