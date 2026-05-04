@@ -276,6 +276,33 @@ async def test_hybrid_search_since_days(tmp_path, monkeypatch):
     assert new in ids
 
 
+def test_fuse_with_recency_uses_parameterized_sql(tmp_path):
+    """_fuse_with_recency must bind ids as SQL parameters, not interpolate.
+    Regression for the f-string SQL pattern in id-list lookup."""
+    import time
+    from src.core.search import _fuse_with_recency
+
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+    now = int(time.time())
+    n_old = insert_note(conn, Note(
+        owner_id=1, tg_chat_id=-1, tg_message_id=1, kind="text",
+        title="", content="alpha", raw_caption=None,
+        created_at=now - 365 * 86400,
+    ))
+    n_new = insert_note(conn, Note(
+        owner_id=1, tg_chat_id=-1, tg_message_id=2, kind="text",
+        title="", content="beta", raw_caption=None,
+        created_at=now - 1 * 86400,
+    ))
+    # Both notes appear in BM25 with identical rank position (rank 0 in
+    # different lists), so RRF contributions tie and recency must break it.
+    fused = _fuse_with_recency(conn, [n_old], [n_new], now)
+    assert set(fused) == {n_old, n_new}
+    assert fused.index(n_new) < fused.index(n_old)
+
+
 @pytest.mark.asyncio
 async def test_hybrid_search_recency_tie_break(tmp_path, monkeypatch):
     """When two notes have identical text (same BM25 + same dense distance),

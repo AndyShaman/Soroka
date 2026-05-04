@@ -46,9 +46,10 @@ def _fuse_with_recency(conn: sqlite3.Connection,
     for rank, nid in enumerate(vec_ids):
         scores[nid] = scores.get(nid, 0.0) + W_VEC * _rrf_score(rank)
     if scores:
-        ids_csv = ",".join(str(i) for i in scores.keys())
+        placeholders = ",".join("?" * len(scores))
         rows = conn.execute(
-            f"SELECT id, created_at FROM notes WHERE id IN ({ids_csv})"
+            f"SELECT id, created_at FROM notes WHERE id IN ({placeholders})",
+            list(scores.keys()),
         ).fetchall()
         for nid, created_at in rows:
             scores[nid] = scores.get(nid, 0.0) + W_RECENCY * _recency_score(created_at, now)
