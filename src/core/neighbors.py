@@ -59,3 +59,47 @@ def get_by_ids(
             result.append(by_id[i])
             seen.add(i)
     return result
+
+
+WINDOW_MIN = 1
+WINDOW_MAX = 10
+
+
+def get_context(
+    conn: sqlite3.Connection,
+    *,
+    owner_id: int,
+    note_id: int,
+    window: int = 3,
+) -> list[Note]:
+    """Sibling messages around `note_id` in the same Telegram chat.
+
+    Selects active (not soft-deleted) notes in the same `tg_chat_id`
+    where `tg_message_id` is within ±window of the source. Excludes the
+    source itself. `thin_content` is intentionally NOT filtered — short
+    replies and reactions are exactly the kind of context callers want.
+
+    `window` is clamped to [1, 10]. Returns [] for missing or
+    cross-owner `note_id`. Sorted ascending by `tg_message_id`.
+    """
+    window = max(WINDOW_MIN, min(WINDOW_MAX, window))
+
+    src = conn.execute(
+        "SELECT tg_chat_id, tg_message_id FROM notes "
+        "WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
+        (note_id, owner_id),
+    ).fetchone()
+    if not src:
+        return []
+    src_chat, src_msg = src
+
+    cur = conn.execute(
+        f"SELECT {_SELECT_NOTE_COLUMNS} FROM notes "
+        f"WHERE owner_id = ? AND deleted_at IS NULL "
+        f"AND tg_chat_id = ? "
+        f"AND tg_message_id BETWEEN ? AND ? "
+        f"AND id != ? "
+        f"ORDER BY tg_message_id ASC",
+        (owner_id, src_chat, src_msg - window, src_msg + window, note_id),
+    )
+    return [_row_to_note(row) for row in cur.fetchall()]

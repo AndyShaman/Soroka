@@ -4,7 +4,7 @@ import pytest
 
 from src.core.db import open_db, init_schema
 from src.core.owners import create_or_get_owner
-from src.core.neighbors import get_by_ids
+from src.core.neighbors import get_by_ids, get_context
 
 
 def _insert_note(conn, *, id, owner_id, kind="post", chat_id=-100, msg_id=None,
@@ -81,3 +81,59 @@ def test_get_by_ids_accepts_exactly_100(conn):
         _insert_note(conn, id=i, owner_id=42)
     result = get_by_ids(conn, owner_id=42, ids=list(range(1, 101)))
     assert len(result) == 100
+
+
+def test_get_context_returns_window_around_note(conn):
+    # 5 messages in the same chat: ids 10, 11, 12 (source), 13, 14
+    for msg in [10, 11, 12, 13, 14]:
+        _insert_note(conn, id=msg, owner_id=42, msg_id=msg, chat_id=-100)
+    result = get_context(conn, owner_id=42, note_id=12, window=2)
+    assert [n.tg_message_id for n in result] == [10, 11, 13, 14]
+
+
+def test_get_context_excludes_source(conn):
+    _insert_note(conn, id=1, owner_id=42, msg_id=100, chat_id=-100)
+    _insert_note(conn, id=2, owner_id=42, msg_id=101, chat_id=-100)
+    result = get_context(conn, owner_id=42, note_id=2, window=3)
+    assert [n.id for n in result] == [1]
+
+
+def test_get_context_excludes_deleted_keeps_thin(conn):
+    _insert_note(conn, id=1, owner_id=42, msg_id=100, chat_id=-100, thin=1)
+    _insert_note(conn, id=2, owner_id=42, msg_id=101, chat_id=-100,
+                 deleted_at=int(time.time()))
+    _insert_note(conn, id=3, owner_id=42, msg_id=102, chat_id=-100)
+    result = get_context(conn, owner_id=42, note_id=3, window=5)
+    # thin (id=1) kept; deleted (id=2) dropped
+    assert [n.id for n in result] == [1]
+
+
+def test_get_context_isolates_chat(conn):
+    # Source in chat A, neighbor at the SAME tg_message_id in chat B —
+    # neighbor must not appear.
+    _insert_note(conn, id=1, owner_id=42, msg_id=100, chat_id=-100)
+    _insert_note(conn, id=2, owner_id=42, msg_id=101, chat_id=-100)
+    _insert_note(conn, id=3, owner_id=42, msg_id=101, chat_id=-200)
+    result = get_context(conn, owner_id=42, note_id=1, window=5)
+    assert [n.id for n in result] == [2]
+
+
+def test_get_context_missing_note_returns_empty(conn):
+    assert get_context(conn, owner_id=42, note_id=9999, window=3) == []
+
+
+def test_get_context_cross_owner_returns_empty(conn):
+    create_or_get_owner(conn, telegram_id=99)
+    _insert_note(conn, id=1, owner_id=99, msg_id=100, chat_id=-100)
+    assert get_context(conn, owner_id=42, note_id=1, window=3) == []
+
+
+def test_get_context_clamps_window(conn):
+    # window=999 should be clamped to 10. Build 25 neighbors; expect at most 20.
+    for msg in range(1, 26):
+        _insert_note(conn, id=msg, owner_id=42, msg_id=msg, chat_id=-100)
+    result = get_context(conn, owner_id=42, note_id=13, window=999)
+    # window clamped to 10 → ids 3..12 and 14..23 = 20 neighbors
+    assert len(result) == 20
+    assert min(n.tg_message_id for n in result) == 3
+    assert max(n.tg_message_id for n in result) == 23
