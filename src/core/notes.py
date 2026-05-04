@@ -1,5 +1,6 @@
 import logging
 import sqlite3
+import time
 from typing import Optional
 
 from src.core.models import Note
@@ -39,7 +40,7 @@ def get_note(conn: sqlite3.Connection, note_id: int) -> Optional[Note]:
         """SELECT id, owner_id, tg_message_id, tg_chat_id, kind, title, content,
                   source_url, raw_caption, created_at,
                   COALESCE(thin_content, 0), deleted_at
-           FROM notes WHERE id = ?""",
+           FROM notes WHERE id = ? AND deleted_at IS NULL""",
         (note_id,),
     )
     row = cur.fetchone()
@@ -85,7 +86,7 @@ def list_recent_notes(conn: sqlite3.Connection, owner_id: int, limit: int = 20,
         cur = conn.execute(
             """SELECT id, owner_id, tg_message_id, tg_chat_id, kind, title, content,
                       source_url, raw_caption, created_at
-               FROM notes WHERE owner_id = ? AND kind = ?
+               FROM notes WHERE owner_id = ? AND kind = ? AND deleted_at IS NULL
                ORDER BY created_at DESC LIMIT ?""",
             (owner_id, kind, limit),
         )
@@ -93,9 +94,24 @@ def list_recent_notes(conn: sqlite3.Connection, owner_id: int, limit: int = 20,
         cur = conn.execute(
             """SELECT id, owner_id, tg_message_id, tg_chat_id, kind, title, content,
                       source_url, raw_caption, created_at
-               FROM notes WHERE owner_id = ?
+               FROM notes WHERE owner_id = ? AND deleted_at IS NULL
                ORDER BY created_at DESC LIMIT ?""",
             (owner_id, limit),
         )
     fields = "id owner_id tg_message_id tg_chat_id kind title content source_url raw_caption created_at".split()
     return [Note(**dict(zip(fields, row))) for row in cur.fetchall()]
+
+
+def soft_delete_note(conn: sqlite3.Connection, note_id: int, *, reason: str) -> bool:
+    """Mark a note as deleted without removing the row. Searches and
+    list-recent skip soft-deleted notes; the row stays for possible
+    restoration via raw SQL. Returns True if a row was affected."""
+    cur = conn.execute(
+        "UPDATE notes SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+        (int(time.time()), note_id),
+    )
+    conn.commit()
+    if cur.rowcount > 0:
+        logger.info("note soft-deleted: id=%s reason=%s", note_id, reason)
+        return True
+    return False

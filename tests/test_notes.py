@@ -75,3 +75,23 @@ def test_list_recent_notes_filters_by_kind(tmp_path):
     ))
     text_only = list_recent_notes(conn, owner_id=1, kind="text")
     assert [n.content for n in text_only] == ["text-note"]
+
+
+def test_soft_delete_note_sets_deleted_at_and_get_returns_none(tmp_path):
+    from src.core.notes import soft_delete_note
+
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+    nid = insert_note(conn, Note(
+        owner_id=1, tg_chat_id=-1, tg_message_id=1, kind="text",
+        title="t", content="контент", raw_caption=None, created_at=1,
+    ))
+
+    soft_delete_note(conn, nid, reason="duplicate")
+
+    assert get_note(conn, nid) is None
+    row = conn.execute(
+        "SELECT deleted_at FROM notes WHERE id = ?", (nid,)
+    ).fetchone()
+    assert row is not None and row[0] is not None
