@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Optional
 
 from telegram import Update
 from telegram.ext import Application, MessageHandler, ContextTypes, filters
@@ -8,7 +9,7 @@ from src.adapters.deepgram import DeepgramClient
 from src.adapters.jina import JinaClient
 from src.adapters.tg_files import is_oversized
 from src.bot.handlers.reactions import (
-    set_reaction, PROCESSING, SUCCESS, FAILURE, OVERSIZED,
+    set_reaction, PROCESSING, SUCCESS, FAILURE, OVERSIZED, THIN,
 )
 from src.core.ingest import ingest_text, ingest_voice, ingest_document
 from src.core.kind import detect_kind_from_message
@@ -42,8 +43,14 @@ async def channel_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
     await set_reaction(ctx.bot, chat_id, msg_id, PROCESSING)
     try:
-        await _route_and_ingest(ctx, conn, owner, msg, is_edit=is_edit)
-        await set_reaction(ctx.bot, chat_id, msg_id, SUCCESS)
+        note_id = await _route_and_ingest(ctx, conn, owner, msg, is_edit=is_edit)
+        emoji = SUCCESS
+        if isinstance(note_id, int):
+            from src.core.notes import get_note
+            note = get_note(conn, note_id)
+            if note and note.thin_content:
+                emoji = THIN
+        await set_reaction(ctx.bot, chat_id, msg_id, emoji)
     except _OversizedFile:
         await set_reaction(ctx.bot, chat_id, msg_id, OVERSIZED)
     except Exception:
@@ -70,20 +77,19 @@ def _safe_filename(raw: str | None, fallback_id: str) -> str:
     return f"document_{fallback_id}"
 
 
-async def _route_and_ingest(ctx, conn, owner, msg, *, is_edit: bool = False) -> None:
+async def _route_and_ingest(ctx, conn, owner, msg, *, is_edit: bool = False) -> Optional[int]:
     kind = detect_kind_from_message(msg)
     jina = JinaClient(api_key=owner.jina_api_key)
     deepgram = DeepgramClient(api_key=owner.deepgram_api_key)
 
     if kind in ("text", "web", "youtube"):
         text = msg.text or msg.caption or ""
-        await ingest_text(
+        return await ingest_text(
             conn, jina=jina, owner_id=owner.telegram_id,
             tg_chat_id=msg.chat.id, tg_message_id=msg.message_id,
             text=text, caption=msg.caption, created_at=int(msg.date.timestamp()),
             is_edit=is_edit,
         )
-        return
 
     if kind == "voice":
         voice = msg.voice
@@ -91,14 +97,13 @@ async def _route_and_ingest(ctx, conn, owner, msg, *, is_edit: bool = False) -> 
             raise _OversizedFile
         f = await ctx.bot.get_file(voice.file_id)
         audio = await f.download_as_bytearray()
-        await ingest_voice(
+        return await ingest_voice(
             conn, deepgram=deepgram, jina=jina, owner_id=owner.telegram_id,
             tg_chat_id=msg.chat.id, tg_message_id=msg.message_id,
             audio_bytes=bytes(audio), mime=voice.mime_type or "audio/ogg",
             caption=msg.caption, created_at=int(msg.date.timestamp()),
             is_edit=is_edit,
         )
-        return
 
     if kind in ("pdf", "docx", "xlsx"):
         doc = msg.document
@@ -123,7 +128,7 @@ async def _route_and_ingest(ctx, conn, owner, msg, *, is_edit: bool = False) -> 
         if not (is_edit and local_path.exists()):
             await f.download_to_drive(custom_path=str(local_path))
 
-        await ingest_document(
+        return await ingest_document(
             conn, jina=jina, owner_id=owner.telegram_id,
             tg_chat_id=msg.chat.id, tg_message_id=msg.message_id,
             local_path=local_path, original_name=doc.file_name,
@@ -131,7 +136,6 @@ async def _route_and_ingest(ctx, conn, owner, msg, *, is_edit: bool = False) -> 
             caption=msg.caption, created_at=int(msg.date.timestamp()),
             is_oversized=False, is_edit=is_edit,
         )
-        return
 
     if kind in ("image", "post"):
         photo = msg.photo[-1]  # largest
@@ -145,7 +149,7 @@ async def _route_and_ingest(ctx, conn, owner, msg, *, is_edit: bool = False) -> 
         if not (is_edit and local_path.exists()):
             await f.download_to_drive(custom_path=str(local_path))
 
-        await ingest_document(
+        return await ingest_document(
             conn, jina=jina, owner_id=owner.telegram_id,
             tg_chat_id=msg.chat.id, tg_message_id=msg.message_id,
             local_path=local_path, original_name=local_path.name,
@@ -153,7 +157,6 @@ async def _route_and_ingest(ctx, conn, owner, msg, *, is_edit: bool = False) -> 
             caption=msg.caption, created_at=int(msg.date.timestamp()),
             is_oversized=False, is_edit=is_edit,
         )
-        return
 
 
 def register_channel_handlers(app: Application) -> None:

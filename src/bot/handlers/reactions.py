@@ -7,6 +7,7 @@ PROCESSING = "👀"
 SUCCESS = "👍"
 FAILURE = "🤔"
 OVERSIZED = "🤯"
+THIN = "🤷"
 
 
 async def set_reaction(bot: Bot, chat_id: int, message_id: int, emoji: str) -> None:

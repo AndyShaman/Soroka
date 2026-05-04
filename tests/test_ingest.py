@@ -312,3 +312,69 @@ async def test_ingest_oversized_records_metadata_only(tmp_path):
     n = get_note(conn, note_id)
     assert n.kind == "oversized"
     assert "big.zip" in n.content
+
+
+@pytest.mark.asyncio
+async def test_ingest_text_marks_thin_content_when_web_extract_fails(tmp_path, monkeypatch):
+    """If trafilatura returns < 200 chars / < 30 words, the note must be
+    persisted with thin_content=1 so downstream code can flag it."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    monkeypatch.setattr(
+        "src.core.ingest.extract_web",
+        lambda url: ("Some Title", "Short."),
+    )
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    note_id = await ingest_text(
+        conn, jina=fake_jina, owner_id=1,
+        tg_chat_id=-1, tg_message_id=70,
+        text="https://example.com/x", caption=None, created_at=1,
+    )
+    n = get_note(conn, note_id)
+    assert n.thin_content is True
+
+
+@pytest.mark.asyncio
+async def test_ingest_text_does_not_mark_thin_for_normal_extract(tmp_path, monkeypatch):
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    monkeypatch.setattr(
+        "src.core.ingest.extract_web",
+        lambda url: ("Some Title", "lorem ipsum " * 50),
+    )
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    note_id = await ingest_text(
+        conn, jina=fake_jina, owner_id=1,
+        tg_chat_id=-1, tg_message_id=71,
+        text="https://example.com/long", caption=None, created_at=1,
+    )
+    n = get_note(conn, note_id)
+    assert n.thin_content is False
+
+
+@pytest.mark.asyncio
+async def test_ingest_text_user_text_is_never_thin(tmp_path):
+    """User-typed plain text (kind='text') reflects what the user wrote,
+    not what an extractor produced — never flag it as thin."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    note_id = await ingest_text(
+        conn, jina=fake_jina, owner_id=1,
+        tg_chat_id=-1, tg_message_id=72,
+        text="короткая мысль", caption=None, created_at=1,
+    )
+    n = get_note(conn, note_id)
+    assert n.thin_content is False

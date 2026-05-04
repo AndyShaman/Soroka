@@ -125,3 +125,32 @@ async def test_channel_handler_routes_new_post_with_is_edit_false(tmp_path):
         await channel_handler(update, ctx)
         routed.assert_awaited_once()
         assert routed.await_args.kwargs["is_edit"] is False
+
+
+@pytest.mark.asyncio
+async def test_channel_handler_sets_thin_reaction_on_thin_extract(tmp_path):
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=42)
+    advance_setup_step(conn, 42, "done")
+    update_owner_field(conn, 42, "inbox_chat_id", -1001234)
+
+    ctx = _make_ctx(conn)
+    update = _make_update(chat_id=-1001234, text="https://example.com/empty")
+
+    async def thin_route(*a, **kw):
+        from src.core.notes import insert_note
+        from src.core.models import Note
+        return insert_note(conn, Note(
+            owner_id=42, tg_chat_id=-1001234, tg_message_id=100,
+            kind="web", title="x", content="short.",
+            source_url="https://example.com/empty", raw_caption=None,
+            created_at=1, thin_content=True,
+        ))
+
+    with patch("src.bot.handlers.channel._route_and_ingest", new=thin_route):
+        await channel_handler(update, ctx)
+
+    last_call = ctx.bot.set_message_reaction.await_args_list[-1]
+    reaction_list = last_call.kwargs["reaction"]
+    assert reaction_list[0].emoji == "🤷"

@@ -18,6 +18,17 @@ from src.adapters.extractors.ocr import extract_ocr
 
 logger = logging.getLogger(__name__)
 
+THIN_MIN_CHARS = 200
+THIN_MIN_WORDS = 30
+
+
+def _is_thin(body: str) -> bool:
+    """An extractor result counts as 'thin' when there's not enough
+    text to embed meaningfully. Short user-typed text doesn't go through
+    extractors, so it never reaches this check."""
+    s = body.strip()
+    return len(s) < THIN_MIN_CHARS or len(s.split()) < THIN_MIN_WORDS
+
 
 async def _save_or_update_note(conn: sqlite3.Connection, *, jina,
                                 note: Note, is_edit: bool,
@@ -72,18 +83,22 @@ async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
         title, body = extract_web(raw)
         source_url = raw
         body = body or raw
+        is_thin = _is_thin(body)
     elif kind == "youtube":
         from src.adapters.extractors.youtube import extract_youtube
         title, body = extract_youtube(raw)
         source_url = raw
         body = body or raw
+        is_thin = _is_thin(body)
     else:
         title = _make_title(raw)
+        is_thin = False
 
     note = Note(
         owner_id=owner_id, tg_message_id=tg_message_id, tg_chat_id=tg_chat_id,
         kind=kind, title=title, content=body.strip(),
         source_url=source_url, raw_caption=caption, created_at=created_at,
+        thin_content=is_thin,
     )
     return await _save_or_update_note(conn, jina=jina, note=note,
                                        is_edit=is_edit, embed_text=body.strip())
@@ -107,6 +122,7 @@ async def ingest_voice(conn: sqlite3.Connection, *, deepgram, jina,
         owner_id=owner_id, tg_message_id=tg_message_id, tg_chat_id=tg_chat_id,
         kind="voice", title=_make_title(transcript), content=transcript.strip(),
         raw_caption=caption, created_at=created_at,
+        thin_content=_is_thin(transcript),
     )
     return await _save_or_update_note(conn, jina=jina, note=note,
                                        is_edit=is_edit, embed_text=transcript)
@@ -122,15 +138,19 @@ async def ingest_document(conn: sqlite3.Connection, *, jina, owner_id: int,
     if is_oversized:
         body = f"[oversized] {original_name} ({file_size} bytes)\n{caption or ''}"
         title = original_name
+        is_thin = False
     elif kind == "pdf":
         body = extract_pdf(local_path)
         title = original_name
+        is_thin = _is_thin(body or "")
     elif kind == "docx":
         body = extract_docx(local_path)
         title = original_name
+        is_thin = _is_thin(body or "")
     elif kind == "xlsx":
         body = extract_xlsx(local_path)
         title = original_name
+        is_thin = _is_thin(body or "")
     elif kind == "image":
         ocr = extract_ocr(local_path) or ""
         # Caption (user's own words) is the strongest semantic signal; OCR
@@ -138,6 +158,7 @@ async def ingest_document(conn: sqlite3.Connection, *, jina, owner_id: int,
         parts = [p for p in (caption or "", ocr) if p.strip()]
         body = "\n\n".join(parts) or original_name
         title = caption or original_name
+        is_thin = (caption or "").strip() == "" and _is_thin(ocr)
     elif kind == "post":
         # Forwarded Telegram post: caption IS the content; the photo is
         # just a link preview. OCR is rarely useful here (logos, hero
@@ -148,14 +169,17 @@ async def ingest_document(conn: sqlite3.Connection, *, jina, owner_id: int,
             parts.append(ocr.strip())
         body = "\n\n".join(p for p in parts if p) or original_name
         title = (caption or "").splitlines()[0][:80] if caption else original_name
+        is_thin = False
     else:
         body = caption or original_name
         title = original_name
+        is_thin = False
 
     note = Note(
         owner_id=owner_id, tg_message_id=tg_message_id, tg_chat_id=tg_chat_id,
         kind=kind, title=title, content=body.strip() or original_name,
         raw_caption=caption, created_at=created_at,
+        thin_content=is_thin,
     )
     embed_text = "" if is_oversized else body.strip()
     note_id = await _save_or_update_note(

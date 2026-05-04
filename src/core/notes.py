@@ -18,11 +18,11 @@ def insert_note(conn: sqlite3.Connection, note: Note) -> Optional[int]:
     cur = conn.execute(
         """INSERT OR IGNORE INTO notes
            (owner_id, tg_message_id, tg_chat_id, kind, title, content,
-            source_url, raw_caption, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            source_url, raw_caption, created_at, thin_content)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (note.owner_id, note.tg_message_id, note.tg_chat_id, note.kind,
          note.title, note.content, note.source_url, note.raw_caption,
-         note.created_at),
+         note.created_at, 1 if note.thin_content else 0),
     )
     conn.commit()
     if cur.rowcount == 0:
@@ -37,15 +37,19 @@ def insert_note(conn: sqlite3.Connection, note: Note) -> Optional[int]:
 def get_note(conn: sqlite3.Connection, note_id: int) -> Optional[Note]:
     cur = conn.execute(
         """SELECT id, owner_id, tg_message_id, tg_chat_id, kind, title, content,
-                  source_url, raw_caption, created_at
+                  source_url, raw_caption, created_at,
+                  COALESCE(thin_content, 0), deleted_at
            FROM notes WHERE id = ?""",
         (note_id,),
     )
     row = cur.fetchone()
     if not row:
         return None
-    fields = "id owner_id tg_message_id tg_chat_id kind title content source_url raw_caption created_at".split()
-    return Note(**dict(zip(fields, row)))
+    fields = ("id owner_id tg_message_id tg_chat_id kind title content "
+              "source_url raw_caption created_at thin_content deleted_at").split()
+    data = dict(zip(fields, row))
+    data["thin_content"] = bool(data["thin_content"])
+    return Note(**data)
 
 
 def find_note_id_by_message(conn: sqlite3.Connection, owner_id: int,
