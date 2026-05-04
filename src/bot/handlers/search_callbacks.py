@@ -4,11 +4,12 @@ State is per-chat in `ctx.user_data["last_search"]` and is volatile —
 on bot restart, old buttons stop working (they no-op gracefully).
 
 Schema of last_search:
-    query             : str — the cleaned query that was searched for
-    offset            : int — current page offset into RRF top-K
-    since_days        : Optional[int] — period filter
-    excluded_ids      : list[int] — ids the user said are 'not it'
-    last_returned_ids : list[int] — what the previous render showed
+    query        : str — the cleaned query that was searched for
+    since_days   : Optional[int] — period filter
+    excluded_ids : list[int] — ids the user said are 'not it'
+    pool         : list[Note] — reranked pool (up to 20) cached on first search
+    cursor       : int — next index into pool to render from
+    shown_ids    : list[int] — ids displayed in the latest render
 """
 import logging
 from typing import Optional
@@ -103,9 +104,19 @@ async def on_next_page(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     state = await _guard(update, ctx)
     if not state:
         return
-    state["offset"] = state.get("offset", 0) + PAGE_SIZE
-    text, returned_ids = await _rerun_and_format(ctx, state)
-    state["last_returned_ids"] = returned_ids
+    pool = state.get("pool") or []
+    cursor = state.get("cursor", 0)
+    next_slice = pool[cursor:cursor + PAGE_SIZE]
+    if not next_slice:
+        await update.callback_query.edit_message_text(
+            "Больше из этого пула нет. Сменй период или уточни запрос.",
+            reply_markup=make_keyboard(state),
+            disable_web_page_preview=True,
+        )
+        return
+    state["cursor"] = cursor + len(next_slice)
+    state["shown_ids"] = [n.id for n in next_slice]
+    text = "\n\n─────\n\n".join(_format_hit(n) for n in next_slice)
     await update.callback_query.edit_message_text(
         text, reply_markup=make_keyboard(state), disable_web_page_preview=True,
     )
@@ -131,11 +142,23 @@ async def on_exclude_current(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> 
     if not state:
         return
     excl = list(state.get("excluded_ids") or [])
-    excl.extend(state.get("last_returned_ids") or [])
+    excl.extend(state.get("shown_ids") or [])
     state["excluded_ids"] = excl
-    state["offset"] = 0
-    text, returned_ids = await _rerun_and_format(ctx, state)
-    state["last_returned_ids"] = returned_ids
+    # Drop the excluded notes from the pool so the next slice skips them.
+    pool = [n for n in (state.get("pool") or []) if n.id not in set(excl)]
+    state["pool"] = pool
+    state["cursor"] = 0
+    next_slice = pool[:PAGE_SIZE]
+    if not next_slice:
+        await update.callback_query.edit_message_text(
+            "После исключений ничего не осталось. Уточни запрос.",
+            reply_markup=make_keyboard(state),
+            disable_web_page_preview=True,
+        )
+        return
+    state["cursor"] = len(next_slice)
+    state["shown_ids"] = [n.id for n in next_slice]
+    text = "\n\n─────\n\n".join(_format_hit(n) for n in next_slice)
     await update.callback_query.edit_message_text(
         text, reply_markup=make_keyboard(state), disable_web_page_preview=True,
     )

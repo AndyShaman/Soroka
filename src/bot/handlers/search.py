@@ -54,7 +54,7 @@ async def search_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     await ctx.bot.send_chat_action(chat_id=msg.chat.id, action="typing")
     candidates = await hybrid_search(
         conn, jina=jina, owner_id=owner.telegram_id,
-        clean_query=intent.clean_query, kind=intent.kind, limit=15,
+        clean_query=intent.clean_query, kind=intent.kind, limit=20,
     )
     if not candidates:
         await msg.reply_text("Не нашёл ничего. Попробуй уточнить запрос.")
@@ -63,21 +63,23 @@ async def search_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     await ctx.bot.send_chat_action(chat_id=msg.chat.id, action="typing")
     reranked = await rerank(
         openrouter, primary=owner.primary_model, fallback=owner.fallback_model,
-        query=intent.clean_query, candidates=candidates, top_k=5,
+        query=intent.clean_query, candidates=candidates, top_k=20,
     )
     if not reranked:
         await msg.reply_text("Не нашёл ничего релевантного.")
         return
 
-    chunks = [_format_hit(n) for n in reranked]
+    first_page = reranked[:5]
+    chunks = [_format_hit(n) for n in first_page]
     text = "\n\n─────\n\n".join(chunks)
 
     new_state = {
         "query": intent.clean_query,
-        "offset": 0,
         "since_days": None,
         "excluded_ids": [],
-        "last_returned_ids": [n.id for n in reranked],
+        "pool": reranked,
+        "shown_ids": [n.id for n in first_page],
+        "cursor": len(first_page),
     }
     ctx.user_data["last_search"] = new_state
 
