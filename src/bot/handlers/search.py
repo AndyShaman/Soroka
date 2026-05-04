@@ -1,5 +1,4 @@
 import logging
-import re
 
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
@@ -8,8 +7,8 @@ from src.adapters.deepgram import DeepgramClient
 from src.adapters.jina import JinaClient
 from src.adapters.openrouter import OpenRouterClient
 from src.bot.auth import is_owner
+from src.bot.handlers._search_format import format_hit
 from src.core.intent import parse_intent
-from src.core.links import message_link
 from src.core.owners import get_owner
 from src.core.search import hybrid_search, rerank
 
@@ -70,7 +69,7 @@ async def search_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     first_page = reranked[:5]
-    chunks = [_format_hit(n) for n in first_page]
+    chunks = [format_hit(n) for n in first_page]
     text = "\n\n─────\n\n".join(chunks)
 
     new_state = {
@@ -96,44 +95,6 @@ async def _query_text(msg, owner, ctx) -> str:
         audio = await f.download_as_bytearray()
         return await deepgram.transcribe(bytes(audio), mime=msg.voice.mime_type or "audio/ogg")
     return msg.text or ""
-
-
-_FILE_ID_TITLE_RE = re.compile(r"^(photo_|file_|document_)", re.IGNORECASE)
-
-
-def _clean_title(raw: str | None) -> str:
-    title = (raw or "").strip()
-    # File-id titles like "photo_AQADlhJrG72ZqEt-.jpg" carry no information.
-    if _FILE_ID_TITLE_RE.match(title):
-        return ""
-    return title[:80]
-
-
-def _clean_snippet(raw: str) -> str:
-    """OCR output is often visually noisy: 1-char lines, repeated blank
-    lines, leading punctuation. Squash that for display only — the raw
-    content stays in the DB unchanged."""
-    lines = []
-    for line in raw.splitlines():
-        s = line.strip()
-        if not s:
-            continue
-        # Drop orphan single-character lines (OCR artefacts: "к", "-", "=").
-        if len(s) <= 2 and not s.isalnum():
-            continue
-        if len(s) == 1:
-            continue
-        lines.append(s)
-    return " ".join(lines)
-
-
-def _format_hit(note) -> str:
-    link = message_link(note.tg_chat_id, note.tg_message_id)
-    title = _clean_title(note.title)
-    snippet = _clean_snippet(note.content)[:200]
-    label = title or "(без подписи)"
-    header = f"📌 [{note.kind}] {label}"
-    return f"{header}\n{link}\n{snippet}" if snippet else f"{header}\n{link}"
 
 
 def register_search_handlers(app: Application) -> None:

@@ -21,9 +21,9 @@ from telegram.ext import Application, CallbackQueryHandler, ContextTypes
 from src.adapters.jina import JinaClient
 from src.adapters.openrouter import OpenRouterClient
 from src.bot.auth import is_owner
+from src.bot.handlers._search_format import format_hit
 from src.core.owners import get_owner
 from src.core.search import hybrid_search, rerank
-from src.core.links import message_link
 
 logger = logging.getLogger(__name__)
 
@@ -74,19 +74,8 @@ async def _rebuild_pool_and_render(ctx, state: dict) -> tuple[str, list]:
         return ("Не нашёл релевантного.", [])
 
     first_page = reranked[:PAGE_SIZE]
-    text = "\n\n─────\n\n".join(_format_hit(n) for n in first_page)
+    text = "\n\n─────\n\n".join(format_hit(n) for n in first_page)
     return (text, reranked)
-
-
-def _format_hit(note) -> str:
-    """Mirrors search.py:_format_hit so re-renders look identical."""
-    from src.bot.handlers.search import _clean_title, _clean_snippet
-    link = message_link(note.tg_chat_id, note.tg_message_id)
-    title = _clean_title(note.title)
-    snippet = _clean_snippet(note.content)[:200]
-    label = title or "(без подписи)"
-    header = f"📌 [{note.kind}] {label}"
-    return f"{header}\n{link}\n{snippet}" if snippet else f"{header}\n{link}"
 
 
 async def _guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Optional[dict]:
@@ -135,7 +124,7 @@ async def on_next_page(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     state["cursor"] = cursor + len(next_slice)
     state["shown_ids"] = [n.id for n in next_slice]
-    text = "\n\n─────\n\n".join(_format_hit(n) for n in next_slice)
+    text = "\n\n─────\n\n".join(format_hit(n) for n in next_slice)
     await update.callback_query.edit_message_text(
         text, reply_markup=make_keyboard(state), disable_web_page_preview=True,
     )
@@ -187,7 +176,7 @@ async def on_exclude_current(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> 
         return
     state["cursor"] = len(next_slice)
     state["shown_ids"] = [n.id for n in next_slice]
-    text = "\n\n─────\n\n".join(_format_hit(n) for n in next_slice)
+    text = "\n\n─────\n\n".join(format_hit(n) for n in next_slice)
     await update.callback_query.edit_message_text(
         text, reply_markup=make_keyboard(state), disable_web_page_preview=True,
     )
