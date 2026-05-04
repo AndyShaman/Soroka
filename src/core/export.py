@@ -26,9 +26,12 @@ def build_export(*, db_path: Path, attachments_dir: Optional[Path],
 def _read_notes(db_path: Path) -> list[dict]:
     conn = sqlite3.connect(db_path)
     try:
-        cur = conn.execute("SELECT id, owner_id, tg_message_id, tg_chat_id, kind, "
-                            "title, content, source_url, raw_caption, created_at "
-                            "FROM notes ORDER BY id")
+        cur = conn.execute(
+            "SELECT id, owner_id, tg_message_id, tg_chat_id, kind, "
+            "title, content, source_url, raw_caption, created_at, "
+            "COALESCE(thin_content, 0) AS thin_content "
+            "FROM notes WHERE deleted_at IS NULL ORDER BY id"
+        )
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
     finally:

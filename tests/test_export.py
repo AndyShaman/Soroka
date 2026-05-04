@@ -34,3 +34,42 @@ def test_build_export_zip(tmp_path):
         with z.open("notes.json") as f:
             data = json.load(f)
         assert data[0]["content"] == "hello"
+
+
+def test_export_excludes_soft_deleted_notes(tmp_path):
+    """A note that was soft-deleted must not appear in the JSON dump.
+    The SQLite snapshot still contains it (raw recovery is intentional),
+    but the user-facing flat JSON respects the deletion."""
+    import time
+    from src.core.notes import soft_delete_note
+
+    db_path = tmp_path / "soroka.db"
+    conn = open_db(str(db_path))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+    keep = insert_note(conn, Note(
+        owner_id=1, tg_message_id=1, tg_chat_id=1,
+        kind="post", title="keep", content="kept",
+        source_url=None, raw_caption=None,
+        created_at=int(time.time()),
+    ))
+    drop = insert_note(conn, Note(
+        owner_id=1, tg_message_id=2, tg_chat_id=1,
+        kind="post", title="drop", content="dropped",
+        source_url=None, raw_caption=None,
+        created_at=int(time.time()),
+    ))
+    soft_delete_note(conn, drop, reason="test")
+    conn.close()
+
+    zip_path = tmp_path / "out.zip"
+    build_export(db_path=db_path, attachments_dir=None,
+                 output_path=zip_path, lite=True)
+
+    with zipfile.ZipFile(zip_path) as z:
+        with z.open("notes.json") as f:
+            data = json.load(f)
+    ids = {n["id"] for n in data}
+    assert keep in ids
+    assert drop not in ids
+    assert all("thin_content" in n for n in data)  # new column exposed
