@@ -15,7 +15,7 @@ async def test_setup_bot_menu_publishes_six_commands():
     app.bot.set_my_commands.assert_awaited_once()
     cmds = app.bot.set_my_commands.call_args[0][0]
     names = [c.command for c in cmds]
-    assert names == ["help", "status", "mcp", "export", "models", "reset"]
+    assert names == ["help", "status", "stats", "mcp", "export", "models", "reset"]
     # All entries must have a description (non-empty)
     assert all(c.description for c in cmds)
 
@@ -29,3 +29,9 @@ async def test_setup_bot_menu_swallows_telegram_failure():
 
     # Should not raise.
     await _setup_bot_menu(app)
+
+
+def test_bot_menu_includes_stats():
+    from src.bot.main import BOT_MENU_COMMANDS
+    names = [c.command for c in BOT_MENU_COMMANDS]
+    assert "stats" in names

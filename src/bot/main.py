@@ -26,6 +26,7 @@ ALLOWED_UPDATES = [
 BOT_MENU_COMMANDS = [
     BotCommand("help", "Справка"),
     BotCommand("status", "Мои настройки"),
+    BotCommand("stats", "Статистика по заметкам"),
     BotCommand("mcp", "Конфиг для Claude Desktop"),
     BotCommand("export", "Скачать архив базы"),
     BotCommand("models", "Сменить AI-модели"),

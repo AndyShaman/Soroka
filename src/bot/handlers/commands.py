@@ -1,4 +1,5 @@
 import datetime as dt
+from datetime import datetime, timezone
 from pathlib import Path
 
 from telegram import Update
@@ -8,6 +9,7 @@ from src.adapters.github_mirror import GitHubMirror, GitHubMirrorError
 from src.bot.auth import is_owner
 from src.core.export import build_export
 from src.core.owners import get_owner
+from src.core.stats import compute_stats, Stats
 
 HELP_TEXT = (
     "*Soroka — команды*\n\n"
@@ -56,11 +58,6 @@ async def status_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("Бот ещё не настроен. /start")
         return
 
-    notes_count = conn.execute(
-        "SELECT count(*) FROM notes WHERE owner_id = ?",
-        (owner.telegram_id,),
-    ).fetchone()[0]
-
     def _mask(v: str | None) -> str:
         if not v:
             return "❌"
@@ -75,7 +72,6 @@ async def status_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         f"🟡 fallback:   `{owner.fallback_model or '—'}`\n"
         f"💾 GitHub:     `{owner.github_mirror_repo or '—'}`\n"
         f"📺 Inbox:      `{owner.inbox_chat_id or '—'}`\n"
-        f"📊 Notes:       {notes_count}\n"
         f"⚙ Setup step:  `{owner.setup_step}`"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -285,9 +281,67 @@ async def export_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(f"Полный архив тут: {url}")
 
 
+def _pluralize_zametki(n: int) -> str:
+    """Russian plural for 'заметка'. Rule by last two digits of |n|.
+    11–14 → 'заметок'; ending in 1 (and not 11) → 'заметка';
+    ending in 2–4 (and not 12–14) → 'заметки'; otherwise → 'заметок'."""
+    abs_n = abs(n)
+    last_two = abs_n % 100
+    last_one = abs_n % 10
+    if 11 <= last_two <= 14:
+        word = "заметок"
+    elif last_one == 1:
+        word = "заметка"
+    elif 2 <= last_one <= 4:
+        word = "заметки"
+    else:
+        word = "заметок"
+    return f"{n} {word}"
+
+
+def _format_stats(s: Stats) -> str:
+    """Human-readable /stats body. Empty DB shows only the 'Всего' line."""
+    head = f"*📊 Soroka /stats*\n\nВсего: {_pluralize_zametki(s.total)}"
+    if s.total == 0:
+        return head
+
+    windows = (
+        f"\n\nЗа день:    +{s.last_day}"
+        f"\nЗа неделю:  +{s.last_week}"
+        f"\nЗа месяц:   +{s.last_month}"
+    )
+
+    by_kind_lines = "\n".join(
+        f"  {kind:<10} {count:>5}" for kind, count in s.by_kind.items()
+    )
+    kinds_block = f"\n\n*По типам:*\n{by_kind_lines}" if s.by_kind else ""
+
+    def _date(epoch):
+        if epoch is None:
+            return "—"
+        return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")
+
+    bounds = (
+        f"\n\nСамая старая: {_date(s.oldest_at)}"
+        f"\nСамая новая:  {_date(s.newest_at)}"
+    )
+
+    return head + windows + kinds_block + bounds
+
+
+async def stats_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    settings = ctx.application.bot_data["settings"]
+    conn = ctx.application.bot_data["conn"]
+    if not is_owner(update.effective_user.id, settings.owner_telegram_id):
+        return
+    s = compute_stats(conn, settings.owner_telegram_id)
+    await update.message.reply_text(_format_stats(s), parse_mode="Markdown")
+
+
 def register_command_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(CommandHandler("mcp", mcp_command))
