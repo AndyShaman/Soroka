@@ -39,7 +39,10 @@ async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     settings = ctx.application.bot_data["settings"]
     if not is_owner(update.effective_user.id, settings.owner_telegram_id):
         return
-    await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
+    from src.bot.handlers.help_buttons import build_help_keyboard
+    await update.message.reply_text(
+        HELP_TEXT, parse_mode="Markdown", reply_markup=build_help_keyboard(),
+    )
 
 
 async def status_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

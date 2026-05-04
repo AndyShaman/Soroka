@@ -11,6 +11,7 @@ from src.bot.handlers.setup import register_setup_handlers
 from src.bot.handlers.channel import register_channel_handlers
 from src.bot.handlers.search import register_search_handlers
 from src.bot.handlers.search_callbacks import register_search_callbacks
+from src.bot.handlers.help_buttons import register_help_buttons
 
 ALLOWED_UPDATES = [
     Update.MESSAGE,
@@ -54,6 +55,7 @@ def build_app(settings, conn) -> Application:
     register_channel_handlers(app)
     register_search_handlers(app)
     register_search_callbacks(app)
+    register_help_buttons(app)
     return app
 
 

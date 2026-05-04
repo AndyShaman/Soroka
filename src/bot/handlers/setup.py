@@ -195,23 +195,24 @@ async def skip_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     settings = ctx.application.bot_data["settings"]
     conn = ctx.application.bot_data["conn"]
+    msg = update.effective_message
 
     if not is_owner(update.effective_user.id, settings.owner_telegram_id):
-        await update.message.reply_text("Бот настроен на одного владельца.")
+        await msg.reply_text("Бот настроен на одного владельца.")
         return
 
     create_or_get_owner(conn, telegram_id=settings.owner_telegram_id)
     owner = get_owner(conn, settings.owner_telegram_id)
 
     if owner.setup_step == "done":
-        await update.message.reply_text(DONE_MESSAGE)
+        await msg.reply_text(DONE_MESSAGE)
         return
 
     if owner.setup_step is None:
         advance_setup_step(conn, settings.owner_telegram_id, "jina")
         owner = get_owner(conn, settings.owner_telegram_id)
 
-    await update.message.reply_text(
+    await msg.reply_text(
         "Привет! Я Soroka. Настроим за 5 минут.\n\n" + PROMPTS[owner.setup_step]
     )
 
