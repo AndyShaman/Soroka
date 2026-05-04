@@ -1,10 +1,11 @@
+import struct
 import time
 
 import pytest
 
 from src.core.db import open_db, init_schema
 from src.core.owners import create_or_get_owner
-from src.core.neighbors import get_by_ids, get_context
+from src.core.neighbors import find_similar, get_by_ids, get_context
 
 
 def _insert_note(conn, *, id, owner_id, kind="post", chat_id=-100, msg_id=None,
@@ -137,3 +138,79 @@ def test_get_context_clamps_window(conn):
     assert len(result) == 20
     assert min(n.tg_message_id for n in result) == 3
     assert max(n.tg_message_id for n in result) == 23
+
+
+def _embed(conn, note_id: int, vec: list[float]) -> None:
+    """Write a 1024-dim float vector to notes_vec for `note_id`."""
+    assert len(vec) == 1024
+    blob = struct.pack(f"{len(vec)}f", *vec)
+    conn.execute(
+        "INSERT INTO notes_vec(note_id, embedding) VALUES (?, ?)",
+        (note_id, blob),
+    )
+    conn.commit()
+
+
+def _vec(seed: float) -> list[float]:
+    """Deterministic 1024-d vector. Two distinct seeds give distinct,
+    not-orthogonal vectors so the kNN query has something to rank."""
+    return [seed] * 1024
+
+
+@pytest.mark.asyncio
+async def test_find_similar_returns_neighbors_excluding_source(conn):
+    _insert_note(conn, id=1, owner_id=42, content="source")
+    _insert_note(conn, id=2, owner_id=42, content="close")
+    _insert_note(conn, id=3, owner_id=42, content="far")
+    _embed(conn, 1, _vec(1.0))
+    _embed(conn, 2, _vec(1.01))   # very close to 1
+    _embed(conn, 3, _vec(5.0))    # far from 1
+
+    result = await find_similar(conn, owner_id=42, note_id=1, limit=5)
+    ids = [n.id for n in result]
+    assert 1 not in ids        # source excluded
+    assert ids[0] == 2         # closest first
+    assert 3 in ids
+
+
+@pytest.mark.asyncio
+async def test_find_similar_excludes_deleted_and_thin(conn):
+    _insert_note(conn, id=1, owner_id=42, content="source")
+    _insert_note(conn, id=2, owner_id=42, content="thin", thin=1)
+    _insert_note(conn, id=3, owner_id=42, content="deleted",
+                 deleted_at=int(time.time()))
+    _insert_note(conn, id=4, owner_id=42, content="ok")
+    for nid, seed in [(1, 1.0), (2, 1.01), (3, 1.02), (4, 1.03)]:
+        _embed(conn, nid, _vec(seed))
+
+    result = await find_similar(conn, owner_id=42, note_id=1, limit=5)
+    assert [n.id for n in result] == [4]
+
+
+@pytest.mark.asyncio
+async def test_find_similar_isolates_owner(conn):
+    create_or_get_owner(conn, telegram_id=99)
+    _insert_note(conn, id=1, owner_id=42, content="source")
+    _insert_note(conn, id=2, owner_id=99, content="other-owner")
+    _embed(conn, 1, _vec(1.0))
+    _embed(conn, 2, _vec(1.01))
+
+    assert await find_similar(conn, owner_id=42, note_id=1, limit=5) == []
+
+
+@pytest.mark.asyncio
+async def test_find_similar_no_embedding_returns_empty(conn):
+    _insert_note(conn, id=1, owner_id=42)  # no _embed call
+    assert await find_similar(conn, owner_id=42, note_id=1, limit=5) == []
+
+
+@pytest.mark.asyncio
+async def test_find_similar_respects_limit(conn):
+    _insert_note(conn, id=1, owner_id=42, content="source")
+    _embed(conn, 1, _vec(1.0))
+    for i in range(2, 12):
+        _insert_note(conn, id=i, owner_id=42)
+        _embed(conn, i, _vec(1.0 + i * 0.01))
+
+    result = await find_similar(conn, owner_id=42, note_id=1, limit=3)
+    assert len(result) == 3

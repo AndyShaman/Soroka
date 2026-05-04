@@ -103,3 +103,50 @@ def get_context(
         (owner_id, src_chat, src_msg - window, src_msg + window, note_id),
     )
     return [_row_to_note(row) for row in cur.fetchall()]
+
+
+async def find_similar(
+    conn: sqlite3.Connection,
+    *,
+    owner_id: int,
+    note_id: int,
+    limit: int = 5,
+) -> list[Note]:
+    """Vector neighbors of `note_id` within the owner's active notes.
+
+    Excludes the source itself, soft-deleted notes, and thin_content
+    notes. Returns at most `limit` notes ordered by ascending vector
+    distance. Returns [] if `note_id` has no embedding row, does not
+    exist, or belongs to another owner.
+    """
+    src_row = conn.execute(
+        "SELECT embedding FROM notes_vec WHERE note_id = ?",
+        (note_id,),
+    ).fetchone()
+    if not src_row:
+        return []
+    src_blob = src_row[0]
+
+    # Pull more than we need so we can filter the source/deleted/thin/cross-owner
+    # rows out without coming back short.
+    k = limit + 5
+    cur = conn.execute(
+        "SELECT note_id FROM notes_vec WHERE embedding MATCH ? AND k = ? "
+        "ORDER BY distance",
+        (src_blob, k),
+    )
+    candidate_ids = [row[0] for row in cur.fetchall() if row[0] != note_id]
+    if not candidate_ids:
+        return []
+
+    placeholders = ",".join("?" * len(candidate_ids))
+    rows = conn.execute(
+        f"SELECT {_SELECT_NOTE_COLUMNS} FROM notes "
+        f"WHERE owner_id = ? AND deleted_at IS NULL "
+        f"AND COALESCE(thin_content, 0) = 0 "
+        f"AND id IN ({placeholders})",
+        (owner_id, *candidate_ids),
+    ).fetchall()
+    by_id = {row[0]: _row_to_note(row) for row in rows}
+    ordered = [by_id[i] for i in candidate_ids if i in by_id]
+    return ordered[:limit]
