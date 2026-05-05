@@ -66,3 +66,56 @@ def test_iter_window_none_means_full_sweep(tmp_path):
         conn, owner_id=42, days=None, now=now,
     )]
     assert {a, b} <= set(ids)
+
+
+@pytest.mark.asyncio
+async def test_probe_returns_deleted_on_forward_not_found():
+    bot = MagicMock()
+    bot.forward_message = AsyncMock(side_effect=BadRequest(
+        "Message to forward not found"
+    ))
+    bot.delete_message = AsyncMock()
+    note = MagicMock(tg_chat_id=-1001234, tg_message_id=42)
+    result = await sync_deleted.probe_message_exists(
+        bot, owner_telegram_id=42, note=note,
+    )
+    assert result == "deleted"
+    bot.delete_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_probe_returns_exists_and_cleans_up_forward():
+    bot = MagicMock()
+    forwarded = MagicMock(message_id=999)
+    bot.forward_message = AsyncMock(return_value=forwarded)
+    bot.delete_message = AsyncMock()
+    note = MagicMock(tg_chat_id=-1001234, tg_message_id=42)
+
+    result = await sync_deleted.probe_message_exists(
+        bot, owner_telegram_id=42, note=note,
+    )
+    assert result == "exists"
+    bot.delete_message.assert_awaited_once_with(chat_id=42, message_id=999)
+
+
+@pytest.mark.asyncio
+async def test_probe_returns_unknown_on_other_error():
+    bot = MagicMock()
+    bot.forward_message = AsyncMock(side_effect=TelegramError("Forbidden"))
+    bot.delete_message = AsyncMock()
+    note = MagicMock(tg_chat_id=-1001234, tg_message_id=42)
+    result = await sync_deleted.probe_message_exists(
+        bot, owner_telegram_id=42, note=note,
+    )
+    assert result == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_probe_classifies_message_id_invalid_as_deleted():
+    bot = MagicMock()
+    bot.forward_message = AsyncMock(side_effect=BadRequest("MESSAGE_ID_INVALID"))
+    bot.delete_message = AsyncMock()
+    note = MagicMock(tg_chat_id=-1001234, tg_message_id=42)
+    assert await sync_deleted.probe_message_exists(
+        bot, owner_telegram_id=42, note=note,
+    ) == "deleted"

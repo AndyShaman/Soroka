@@ -8,11 +8,56 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
-from typing import Iterable, Optional
+from typing import Iterable, Literal, Optional
+
+from telegram.error import BadRequest, TelegramError
 
 from src.core.models import Note
 
 logger = logging.getLogger(__name__)
+
+ProbeResult = Literal["exists", "deleted", "unknown"]
+
+_DELETED_MARKERS = (
+    "message to forward not found",
+    "message_id_invalid",
+)
+
+
+async def probe_message_exists(bot, *, owner_telegram_id: int, note) -> ProbeResult:
+    """Forward `note` to the owner's DM as a probe, then immediately
+    delete the forwarded copy so the owner doesn't see clutter.
+
+    Returns:
+      - "exists" if the forward succeeded (delete is best-effort).
+      - "deleted" if Telegram says the source message is gone.
+      - "unknown" on any other error (rate-limit, forbidden, network…).
+    """
+    try:
+        forwarded = await bot.forward_message(
+            chat_id=owner_telegram_id,
+            from_chat_id=note.tg_chat_id,
+            message_id=note.tg_message_id,
+            disable_notification=True,
+        )
+    except BadRequest as e:
+        text = str(e).lower()
+        if any(m in text for m in _DELETED_MARKERS):
+            return "deleted"
+        logger.warning("probe BadRequest other than deletion: %s", e)
+        return "unknown"
+    except TelegramError as e:
+        logger.warning("probe TelegramError: %s", e)
+        return "unknown"
+
+    try:
+        await bot.delete_message(
+            chat_id=owner_telegram_id,
+            message_id=forwarded.message_id,
+        )
+    except TelegramError:
+        logger.exception("probe cleanup delete failed")
+    return "exists"
 
 
 def iter_active_notes_in_window(
