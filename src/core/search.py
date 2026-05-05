@@ -12,9 +12,13 @@ from src.core.models import Note
 logger = logging.getLogger(__name__)
 
 # Probed empirically on Jina v3 1024-dim embeddings against Russian notes:
-# direct match ≈ 0.7-1.0, semantically related ≈ 1.0-1.25, unrelated ≥ 1.3.
-# 1.25 keeps "биотех → биохакер" (1.20) and cuts unrelated notes (1.33+).
-VEC_DISTANCE_MAX = 1.25
+# direct match ≈ 0.7-1.0, semantically related ≈ 1.0-1.4, unrelated ≥ 1.45.
+# Raised from 1.25 to 1.4 after tests/eval/run_eval showed semantic queries
+# without token overlap ("здоровое питание", "спорт") losing recall when
+# relevant docs sat in the 1.25-1.4 band. The wider net relies on the
+# strict rerank prompt below to drop weakly-related candidates instead of
+# padding the top-K — measured trade-off: recall +5, precision flat.
+VEC_DISTANCE_MAX = 1.4
 
 RRF_K = 60
 W_BM25 = 0.4
@@ -202,10 +206,17 @@ RERANK_PROMPT = """Ты — реранкер результатов поиска
 Кандидаты (id и фрагмент):
 {candidates}
 
-Верни JSON-массив id в порядке релевантности (сначала самый релевантный),
-не больше {top_k} элементов. Пример: [12, 5, 8].
-Если ни один не релевантен — верни пустой массив [].
-ТОЛЬКО JSON, ничего больше.
+Верни JSON-массив id ТОЛЬКО реально релевантных кандидатов в порядке
+убывания релевантности (сначала самый релевантный). Не больше {top_k}.
+
+Важно:
+- Не дополняй список до {top_k} слабо-связанными кандидатами. Лучше
+  вернуть 2 действительно релевантных, чем 5 с тремя "почти подходит".
+- Релевантный = напрямую отвечает на запрос или содержит запрашиваемое
+  понятие. Тематически похожее, но не отвечающее запросу — НЕ релевантно.
+- Если ни один кандидат не релевантен — верни пустой массив [].
+
+ТОЛЬКО JSON, ничего больше. Пример: [12, 5, 8] или [].
 """
 
 
