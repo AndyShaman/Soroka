@@ -119,3 +119,77 @@ async def test_probe_classifies_message_id_invalid_as_deleted():
     assert await sync_deleted.probe_message_exists(
         bot, owner_telegram_id=42, note=note,
     ) == "deleted"
+
+
+@pytest.mark.asyncio
+async def test_run_sync_soft_deletes_only_missing(tmp_path):
+    conn = _setup_db(tmp_path)
+    now = int(time.time())
+    alive = insert_note(conn, _mk_note(42, 100, created_at=now - 3600))
+    gone = insert_note(conn, _mk_note(42, 200, created_at=now - 3600))
+    other = insert_note(conn, _mk_note(42, 300, created_at=now - 3600))
+
+    bot = MagicMock()
+    forwarded = MagicMock(message_id=999)
+
+    async def fake_forward(*, chat_id, from_chat_id, message_id, disable_notification):
+        if message_id == 200:
+            raise BadRequest("Message to forward not found")
+        return forwarded
+
+    bot.forward_message = AsyncMock(side_effect=fake_forward)
+    bot.delete_message = AsyncMock()
+
+    result = await sync_deleted.run_sync(
+        bot, conn, owner_id=42, owner_telegram_id=42,
+        days=14, max_rps=1000,
+    )
+    assert result.checked == 3
+    assert result.deleted == 1
+
+    deleted_at_alive = conn.execute(
+        "SELECT deleted_at FROM notes WHERE id=?", (alive,)
+    ).fetchone()[0]
+    deleted_at_gone = conn.execute(
+        "SELECT deleted_at FROM notes WHERE id=?", (gone,)
+    ).fetchone()[0]
+    deleted_at_other = conn.execute(
+        "SELECT deleted_at FROM notes WHERE id=?", (other,)
+    ).fetchone()[0]
+    assert deleted_at_alive is None
+    assert deleted_at_other is None
+    assert deleted_at_gone is not None
+
+
+@pytest.mark.asyncio
+async def test_run_sync_lock_prevents_concurrent(tmp_path):
+    """Second run_sync while the first is in flight raises BusyError."""
+    conn = _setup_db(tmp_path)
+    now = int(time.time())
+    insert_note(conn, _mk_note(42, 1, created_at=now - 3600))
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    bot = MagicMock()
+
+    async def slow_forward(**kw):
+        started.set()
+        await release.wait()
+        raise BadRequest("Message to forward not found")
+
+    bot.forward_message = AsyncMock(side_effect=slow_forward)
+    bot.delete_message = AsyncMock()
+
+    first = asyncio.create_task(sync_deleted.run_sync(
+        bot, conn, owner_id=42, owner_telegram_id=42,
+        days=14, max_rps=1000,
+    ))
+    await started.wait()
+    with pytest.raises(sync_deleted.BusyError):
+        await sync_deleted.run_sync(
+            bot, conn, owner_id=42, owner_telegram_id=42,
+            days=14, max_rps=1000,
+        )
+    release.set()
+    await first

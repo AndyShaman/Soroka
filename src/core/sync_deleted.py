@@ -5,16 +5,32 @@ confirmed by Telegram in tdlib/td#3314). We detect deletions by trying to
 forward the message to the owner's DM and observing the error response."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 import time
+from dataclasses import dataclass
 from typing import Iterable, Literal, Optional
 
 from telegram.error import BadRequest, TelegramError
 
 from src.core.models import Note
+from src.core.notes import soft_delete_note
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SyncResult:
+    checked: int
+    deleted: int
+
+
+class BusyError(RuntimeError):
+    """A sync run is already in flight."""
+
+
+_lock = asyncio.Lock()
 
 ProbeResult = Literal["exists", "deleted", "unknown"]
 
@@ -94,3 +110,42 @@ def iter_active_notes_in_window(
         data = dict(zip(fields, row))
         data["thin_content"] = bool(data["thin_content"])
         yield Note(**data)
+
+
+async def run_sync(
+    bot, conn: sqlite3.Connection, *,
+    owner_id: int, owner_telegram_id: int,
+    days: Optional[int], max_rps: int = 10,
+) -> SyncResult:
+    """Probe every active note in window; soft-delete those that come
+    back as 'deleted'. The 'unknown' bucket is intentionally left alone
+    so transient Telegram errors never nuke live notes."""
+    if _lock.locked():
+        raise BusyError("sync already running")
+
+    async with _lock:
+        return await _run_sync_locked(
+            bot, conn,
+            owner_id=owner_id, owner_telegram_id=owner_telegram_id,
+            days=days, max_rps=max_rps,
+        )
+
+
+async def _run_sync_locked(
+    bot, conn, *, owner_id, owner_telegram_id, days, max_rps,
+) -> SyncResult:
+    delay = 1.0 / max_rps if max_rps > 0 else 0.0
+    checked = 0
+    deleted = 0
+    for note in iter_active_notes_in_window(conn, owner_id=owner_id, days=days):
+        checked += 1
+        result = await probe_message_exists(
+            bot, owner_telegram_id=owner_telegram_id, note=note,
+        )
+        if result == "deleted":
+            if soft_delete_note(conn, note.id, reason="channel_post_deleted"):
+                deleted += 1
+        if delay:
+            await asyncio.sleep(delay)
+    logger.info("sync run done: checked=%d deleted=%d", checked, deleted)
+    return SyncResult(checked=checked, deleted=deleted)
