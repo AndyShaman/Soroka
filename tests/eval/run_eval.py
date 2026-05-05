@@ -15,6 +15,7 @@ Optional env:
 """
 import argparse
 import asyncio
+import importlib
 import os
 import sys
 
@@ -23,7 +24,6 @@ from dotenv import load_dotenv
 from tests.eval.metrics import (
     aggregate, mrr, precision_at_k, recall_at_k,
 )
-from tests.eval.queries import QUERIES
 from tests.eval.runner import run_all
 
 
@@ -85,6 +85,11 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description="Search-quality eval")
     parser.add_argument("--tag", help="run only queries with this tag")
     parser.add_argument(
+        "--queries-module",
+        default="tests.eval.queries",
+        help="dotted path of module exposing QUERIES (default tests.eval.queries)",
+    )
+    parser.add_argument(
         "--primary-model",
         default=os.environ.get("EVAL_PRIMARY_MODEL", "anthropic/claude-haiku-4-5"),
     )
@@ -93,6 +98,9 @@ async def main() -> int:
         default=os.environ.get("EVAL_FALLBACK_MODEL", "openai/gpt-4o-mini"),
     )
     args = parser.parse_args()
+    queries_module = importlib.import_module(args.queries_module)
+    QUERIES = queries_module.QUERIES
+    print(f"queries={args.queries_module} (n={len(QUERIES)})")
 
     load_dotenv()
     jina_key = os.environ.get("JINA_API_KEY", "").strip()
@@ -106,7 +114,7 @@ async def main() -> int:
               file=sys.stderr)
         return 2
 
-    queries_subset = None
+    queries_subset = list(QUERIES)
     if args.tag:
         queries_subset = [q for q in QUERIES if q["tag"] == args.tag]
         if not queries_subset:

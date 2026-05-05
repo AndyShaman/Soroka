@@ -1,24 +1,4 @@
-"""Golden queries for the search-quality eval suite.
-
-33 queries each tagged with the failure-mode dimension they probe:
-
-  * easy            — exact full-word matches; baseline must pass
-  * morphology      — same root, different Russian inflection
-  * morphology-irr  — irregular verb stems (idti vs poshyol)
-  * morphology+kind — morphology AND kind filter from intent
-  * translit        — cross-script (English latin <-> Russian cyrillic)
-  * semantic        — no token overlap; relies on dense vectors
-  * typo            — single-character typos
-  * empty           — should return nothing (precision check)
-  * natural         — natural-language queries the intent parser must clean
-  * intent-cleanup  — queries with filler words ('покажи все ...')
-  * post-text       — text-content of posts containing URLs
-  * post-url-token  — words inside URLs that FTS5 tokenizes as separate tokens
-
-Each entry's `expected` is a list of corpus keys (resolved to note IDs by
-the runner). Order does not matter; we measure unordered set overlap for
-recall@5 and precision@5, then ranked list for MRR.
-"""
+"""Extended golden queries for the search-quality eval suite."""
 
 QUERIES = [
     # ====== easy (8) — baseline must handle these ======
@@ -141,94 +121,95 @@ QUERIES = [
      "expected": ["post-embedding-libs"],
      "tag": "post-url-token"},
 
-    # ====== semantic — extended (5): topics with no lexical overlap ======
-    {"q": "программирование",
-     "expected": ["web-rust-borrow", "web-asyncio-python", "voice-typescript-async",
-                  "post-typescript-tip", "yt-asyncio-deep"],
-     "tag": "semantic"},
-    {"q": "путешествие на кавказ",
+    # ====== semantic-gap (5) — no token overlap across major topics ======
+    {"q": "одновременная обработка запросов без блокировок",
+     "expected": ["web-asyncio-python", "yt-asyncio-deep", "voice-typescript-async"],
+     "tag": "semantic-gap"},
+    {"q": "маршрут по сакартвело с пляжем и дегустациями",
      "expected": ["voice-trip-georgia", "web-georgia-travel"],
-     "tag": "semantic"},
-    {"q": "запись планёрки",
-     "expected": ["voice-rag-meeting", "voice-bot-dative"],
-     "tag": "semantic"},
-    {"q": "тренировка",
-     "expected": ["voice-go-gym", "text-go-gym-list"],
-     "tag": "semantic"},
-    {"q": "удержание зрителей",
-     "expected": ["web-youtube-seo", "yt-channel-growth"],
-     "tag": "semantic"},
+     "tag": "semantic-gap"},
+    {"q": "самочувствие через привычки и биомаркеры",
+     "expected": ["web-biotech-future", "voice-meditation"],
+     "tag": "semantic-gap"},
+    {"q": "доходы автора без рекламной сети",
+     "expected": ["voice-bizdev", "web-channel-monetization", "yt-channel-growth"],
+     "tag": "semantic-gap"},
+    {"q": "физическая активность на свежем воздухе и в зале",
+     "expected": ["voice-go-gym", "text-go-gym-list", "web-bicycle-review",
+                  "yt-bicycle-mechanic", "pdf-cycling-guide"],
+     "tag": "semantic-gap"},
 
-    # ====== morphology — extended cases (3): inflected forms ======
-    {"q": "велосипеда",
-     "expected": ["voice-bike-buy", "web-bicycle-review", "yt-bicycle-mechanic",
-                  "text-bicycle-shortlist"],
-     "tag": "morphology"},
-    {"q": "ботов",
-     "expected": ["voice-bot-dative", "text-bot-idea", "yt-build-bot-python"],
-     "tag": "morphology"},
-    {"q": "карбонарой",
-     "expected": ["voice-recipe-pasta", "web-pasta-carbonara", "yt-pasta-italy"],
-     "tag": "morphology"},
+    # ====== precision-stress (3) — few true hits, many near misses ======
+    {"q": "as const discriminated unions",
+     "expected": ["post-typescript-tip"],
+     "tag": "precision-stress"},
+    {"q": "Trek FX 2 Disc",
+     "expected": ["web-bicycle-review", "text-bicycle-shortlist"],
+     "tag": "precision-stress"},
+    {"q": "чек 12345 visa",
+     "expected": ["image-receipt"],
+     "tag": "precision-stress"},
 
-    # ====== morphology-irr — additional irregular verb ======
-    {"q": "был на тренировке",
-     "expected": ["voice-go-gym", "text-go-gym-list"],
+    # ====== morphology-irr (3) — irregular verbs and hard cases ======
+    {"q": "я был и хочу идти в спортзал",
+     "expected": ["voice-go-gym", "text-go-gym-list", "pdf-russian-grammar"],
+     "tag": "morphology-irr"},
+    {"q": "могу купить велосипед бу на сезон",
+     "expected": ["voice-bike-buy", "web-bicycle-review", "text-bicycle-shortlist"],
+     "tag": "morphology-irr"},
+    {"q": "в боте с Андреем о запуске",
+     "expected": ["voice-bot-dative", "text-bot-idea", "text-meeting-notes",
+                  "post-soroka-launch"],
      "tag": "morphology-irr"},
 
-    # ====== typo — Deepgram-style misrecognitions and keyboard slips ======
-    {"q": "патса карбонара",
-     "expected": ["voice-recipe-pasta", "web-pasta-carbonara", "yt-pasta-italy"],
-     "tag": "typo"},
-    {"q": "asincio",
-     "expected": ["web-asyncio-python", "yt-asyncio-deep"],
-     "tag": "typo"},
-    {"q": "deepgrm",
-     "expected": ["voice-deepgram-quality"],
-     "tag": "typo"},
+    # ====== mixed-script (3) — Latin terms inside Russian sentences ======
+    {"q": "claude api в проде",
+     "expected": ["voice-llm-ratelimits", "yt-claude-api", "yt-rag-anthropic",
+                  "post-claude-cookbook"],
+     "tag": "mixed-script"},
+    {"q": "python скрипт для бота",
+     "expected": ["yt-build-bot-python", "text-bot-idea", "voice-bot-dative"],
+     "tag": "mixed-script"},
+    {"q": "jina embeddings для русского поиска",
+     "expected": ["voice-rag-meeting", "web-jina-embeddings", "post-embedding-libs",
+                  "post-soroka-launch", "web-jina-mirror"],
+     "tag": "mixed-script"},
 
-    # ====== translit — extended (2) ======
-    {"q": "huggingface",
-     "expected": ["post-embedding-libs"],
-     "tag": "translit"},
-    {"q": "claude haiku",
-     "expected": ["voice-llm-ratelimits", "yt-claude-api", "yt-rag-anthropic"],
-     "tag": "translit"},
+    # ====== complex-query (2) — intent parser should preserve meaning ======
+    {"q": "найди материалы где bm25 векторы rrf и реранкер вместе в одном пайплайне",
+     "expected": ["voice-rag-meeting", "web-rag-tutorial", "yt-rag-anthropic",
+                  "pdf-rag-survey", "post-rag-resources"],
+     "tag": "complex-query"},
+    {"q": "покажи не просто рецепты а где объясняют почему карбонару делают без сливок",
+     "expected": ["voice-recipe-pasta", "web-pasta-carbonara", "yt-pasta-italy",
+                  "post-italian-podcast"],
+     "tag": "complex-query"},
 
-    # ====== multi-token — composite queries the intent parser must keep intact ======
-    {"q": "tier 2 claude api",
-     "expected": ["voice-llm-ratelimits"],
-     "tag": "multi-token"},
-    {"q": "обзор городских велосипедов",
-     "expected": ["web-bicycle-review"],
-     "tag": "multi-token"},
-    {"q": "100к подписчиков",
-     "expected": ["yt-channel-growth"],
-     "tag": "multi-token"},
-
-    # ====== voice-typo — heavy ASR distortion that should fail gracefully ======
-    {"q": "тенель ботом",
-     "expected": [],
+    # ====== voice-typo (2) — Deepgram-style transcription damage ======
+    {"q": "тенель бох команды голосом",
+     "expected": ["voice-bot-dative", "yt-build-bot-python", "text-bot-idea"],
      "tag": "voice-typo"},
-    {"q": "бох в видео",
-     "expected": [],
+    {"q": "запесь плонерки про раг и реранкер",
+     "expected": ["voice-rag-meeting", "web-rag-tutorial", "yt-rag-anthropic",
+                  "pdf-rag-survey"],
      "tag": "voice-typo"},
 
-    # ====== empty — extra negative; precision check ======
-    {"q": "qwerty asdfgh",
+    # ====== entity-number (2) — exact entities and numeric facts ======
+    {"q": "100к подписчиков и монетизация канала",
+     "expected": ["yt-channel-growth", "web-channel-monetization", "voice-bizdev"],
+     "tag": "entity-number"},
+    {"q": "tier 2 claude api 429 и gpt-4o 1 миллион токенов",
+     "expected": ["voice-llm-ratelimits", "yt-claude-api", "web-jina-embeddings",
+                  "post-embedding-libs", "web-jina-mirror"],
+     "tag": "entity-number"},
+
+    # ====== negative (2) — should return nothing ======
+    {"q": "квантовая криптография спутниковая связь",
      "expected": [],
-     "tag": "empty"},
-
-    # ====== rare-terms — uncommon proper nouns the model must keep ======
-    {"q": "кахетия",
-     "expected": ["voice-trip-georgia", "web-georgia-travel"],
-     "tag": "rare-terms"},
-
-    # ====== exact-short — single-token English; precision-stress with many
-    # near-relevant programming notes in the corpus ======
-    {"q": "rust",
-     "expected": ["web-rust-borrow"],
-     "tag": "exact-short"},
+     "tag": "negative"},
+    {"q": "рецепт борща со свеклой и капустой",
+     "expected": [],
+     "tag": "negative"},
 ]
 
 assert len(QUERIES) == 55, f"queries must have exactly 55 entries, got {len(QUERIES)}"
