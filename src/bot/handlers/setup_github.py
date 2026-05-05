@@ -42,5 +42,6 @@ async def handle_skip_github(conn: sqlite3.Connection, owner_id: int) -> str:
     update_owner_field(conn, owner_id, "github_mirror_repo", None)
     advance_setup_step(conn, owner_id, "channel")
     from src.bot.handlers.setup import PROMPTS
-    return ("⚠ Без зеркала /export не сможет отдавать большие архивы.\n\n"
+    return ("⚠ Без зеркала /export не сможет отдавать большие архивы.\n"
+            "Подключить позже — команда /setgithub.\n\n"
             + PROMPTS["channel"])
