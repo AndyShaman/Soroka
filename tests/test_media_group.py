@@ -317,3 +317,72 @@ async def test_flush_album_tolerates_failed_download(tmp_path, monkeypatch):
     assert len(rows) == 1
     attachments = list_attachments(conn, rows[0][0])
     assert len(attachments) == 2  # one was lost
+
+
+@pytest.mark.asyncio
+async def test_e2e_two_photos_one_caption_become_one_note(tmp_path, monkeypatch):
+    """Two channel_post updates for the same album → one note with two
+    attachments in the DB."""
+    from src.bot.handlers.channel import channel_handler
+    from src.bot.handlers import media_group as mg
+
+    conn = _setup_db(tmp_path)
+    update_owner_field(conn, 42, "jina_api_key", "fake")
+
+    settings = MagicMock(owner_telegram_id=42)
+    ctx = MagicMock()
+    ctx.application.bot_data = {"settings": settings, "conn": conn}
+    ctx.bot.set_message_reaction = AsyncMock()
+    fake_file = AsyncMock()
+    fake_file.download_to_drive = AsyncMock()
+    ctx.bot.get_file = AsyncMock(return_value=fake_file)
+
+    monkeypatch.setattr(
+        "src.bot.handlers.media_group.PHOTO_DIR_ROOT", tmp_path / "attachments",
+    )
+    monkeypatch.setattr(
+        "src.bot.handlers.media_group.extract_ocr", lambda _p: "x" * 50,
+    )
+    monkeypatch.setattr(
+        "src.bot.handlers.media_group.JinaClient",
+        lambda api_key: MagicMock(embed=AsyncMock(return_value=[0.0] * 1024)),
+    )
+
+    # Override the function default so the timer fires fast in tests.
+    # buffer_message captures FLUSH_DELAY_SEC as its kwarg default at import,
+    # so we have to patch the function's __defaults__ directly.
+    original_buffer = mg.buffer_message
+    async def fast_buffer(msg, ctx, *, flush_callback, delay=0.05):
+        return await original_buffer(
+            msg, ctx, flush_callback=flush_callback, delay=delay,
+        )
+    monkeypatch.setattr("src.bot.handlers.media_group.buffer_message", fast_buffer)
+
+    mg._reset_for_tests()
+
+    for i, caption in enumerate(
+        ["Заголовок поста про AI и нейросети для маркетинга", None], start=400
+    ):
+        update = MagicMock()
+        update.edited_channel_post = None
+        post = update.channel_post
+        post.chat.id = -1001234
+        post.message_id = i
+        post.text = None
+        post.caption = caption
+        post.media_group_id = "ee2e"
+        post.date.timestamp.return_value = 1700000000
+        photo = MagicMock(file_id=f"f{i}", file_unique_id=f"u{i}", file_size=2048)
+        post.photo = [photo]
+        post.voice = None
+        post.document = None
+        await channel_handler(update, ctx)
+
+    await asyncio.sleep(0.2)
+
+    rows = conn.execute("SELECT id, kind FROM notes").fetchall()
+    assert len(rows) == 1
+    note_id, kind = rows[0]
+    assert kind == "post"
+    attachments = list_attachments(conn, note_id)
+    assert len(attachments) == 2
