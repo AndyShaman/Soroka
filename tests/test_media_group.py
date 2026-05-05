@@ -266,3 +266,54 @@ async def test_flush_album_creates_one_note_with_n_attachments(tmp_path, monkeyp
     assert {a.original_name for a in attachments} == {
         "photo_u1.jpg", "photo_u2.jpg", "photo_u3.jpg",
     }
+
+
+@pytest.mark.asyncio
+async def test_flush_album_tolerates_failed_download(tmp_path, monkeypatch):
+    """One photo's get_file raises; the note still saves with the photos
+    that succeeded — better partial than nothing."""
+    conn = _setup_db(tmp_path)
+
+    settings = MagicMock(owner_telegram_id=42)
+    ctx = MagicMock()
+    ctx.application.bot_data = {"settings": settings, "conn": conn}
+    ctx.bot.set_message_reaction = AsyncMock()
+
+    fake_file = AsyncMock()
+    fake_file.download_to_drive = AsyncMock()
+
+    call_count = {"n": 0}
+    async def get_file(_fid):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise RuntimeError("flaky network")
+        return fake_file
+
+    ctx.bot.get_file = AsyncMock(side_effect=get_file)
+    monkeypatch.setattr(
+        "src.bot.handlers.media_group.PHOTO_DIR_ROOT", tmp_path / "attachments",
+    )
+    monkeypatch.setattr(
+        "src.bot.handlers.media_group.extract_ocr", lambda _p: "ok ok ok ok ok ok",
+    )
+    monkeypatch.setattr(
+        "src.bot.handlers.media_group.JinaClient",
+        lambda api_key: MagicMock(embed=AsyncMock(return_value=[0.0] * 1024)),
+    )
+    update_owner_field(conn, 42, "jina_api_key", "fake")
+
+    msgs = [
+        _make_album_msg(chat_id=-1001234, msg_id=300, mgid="g2",
+                         file_unique_id="a", caption="three photos in this album"),
+        _make_album_msg(chat_id=-1001234, msg_id=301, mgid="g2",
+                         file_unique_id="b"),
+        _make_album_msg(chat_id=-1001234, msg_id=302, mgid="g2",
+                         file_unique_id="c"),
+    ]
+
+    await media_group.flush_album(msgs, ctx)
+
+    rows = conn.execute("SELECT id FROM notes").fetchall()
+    assert len(rows) == 1
+    attachments = list_attachments(conn, rows[0][0])
+    assert len(attachments) == 2  # one was lost
