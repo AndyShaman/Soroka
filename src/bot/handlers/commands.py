@@ -7,6 +7,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 from src.adapters.github_mirror import GitHubMirror, GitHubMirrorError
 from src.bot.auth import is_owner
+from src.core import sync_deleted
 from src.core.export import build_export
 from src.core.owners import get_owner
 from src.core.stats import compute_stats, Stats
@@ -338,6 +339,35 @@ async def stats_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(_format_stats(s), parse_mode="Markdown")
 
 
+async def sync_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manual full-database sync: probe every active note and soft-delete
+    those whose Telegram source has been removed. No window."""
+    settings = ctx.application.bot_data["settings"]
+    conn = ctx.application.bot_data["conn"]
+    if update.effective_user is None or not is_owner(
+        update.effective_user.id, settings.owner_telegram_id
+    ):
+        return
+
+    sent = await update.message.reply_text("🔄 проверяю заметки…")
+    try:
+        result = await sync_deleted.run_sync(
+            ctx.bot, conn,
+            owner_id=settings.owner_telegram_id,
+            owner_telegram_id=settings.owner_telegram_id,
+            days=None,
+        )
+    except sync_deleted.BusyError:
+        await sent.edit_text("⏳ уже идёт проверка, дождись окончания")
+        return
+    except Exception as e:
+        await sent.edit_text(f"❌ ошибка: {e}")
+        return
+    await sent.edit_text(
+        f"✅ проверено {result.checked}, удалено {result.deleted}"
+    )
+
+
 def register_command_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status_command))
@@ -346,6 +376,7 @@ def register_command_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(CommandHandler("mcp", mcp_command))
     app.add_handler(CommandHandler("export", export_command))
+    app.add_handler(CommandHandler("sync", sync_command))
     for kind in PENDING_PROMPTS:
         app.add_handler(CommandHandler(f"set{kind}", _make_set_command(kind)))
     # The pending-set handler must run BEFORE search handler.

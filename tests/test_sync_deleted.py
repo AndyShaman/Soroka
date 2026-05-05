@@ -220,3 +220,89 @@ async def test_daily_sync_callback_invokes_run_sync(tmp_path, monkeypatch):
     await bot_main._daily_sync_job(ctx)
     assert called["days"] == 14
     assert called["owner_id"] == 42
+
+
+@pytest.mark.asyncio
+async def test_sync_command_runs_full_sweep(tmp_path, monkeypatch):
+    from src.bot.handlers.commands import sync_command
+
+    called = {}
+
+    async def fake_run_sync(bot, conn, *, owner_id, owner_telegram_id, days, **kw):
+        called["days"] = days
+        return sync_deleted.SyncResult(checked=5, deleted=2)
+
+    monkeypatch.setattr(sync_deleted, "run_sync", fake_run_sync)
+
+    conn = _setup_db(tmp_path)
+
+    settings = MagicMock(owner_telegram_id=42)
+    ctx = MagicMock()
+    ctx.application.bot_data = {"settings": settings, "conn": conn}
+
+    sent = MagicMock()
+    sent.edit_text = AsyncMock()
+    update = MagicMock()
+    update.effective_user.id = 42
+    update.effective_chat.id = 42
+    update.message.reply_text = AsyncMock(return_value=sent)
+
+    await sync_command(update, ctx)
+
+    assert called["days"] is None
+    update.message.reply_text.assert_awaited()
+    sent.edit_text.assert_awaited()
+    final_text = sent.edit_text.call_args.args[0]
+    assert "5" in final_text and "2" in final_text
+
+
+@pytest.mark.asyncio
+async def test_sync_command_busy(tmp_path, monkeypatch):
+    from src.bot.handlers.commands import sync_command
+
+    async def busy_run_sync(*a, **kw):
+        raise sync_deleted.BusyError()
+
+    monkeypatch.setattr(sync_deleted, "run_sync", busy_run_sync)
+
+    conn = _setup_db(tmp_path)
+    settings = MagicMock(owner_telegram_id=42)
+    ctx = MagicMock()
+    ctx.application.bot_data = {"settings": settings, "conn": conn}
+
+    sent = MagicMock()
+    sent.edit_text = AsyncMock()
+    update = MagicMock()
+    update.effective_user.id = 42
+    update.message.reply_text = AsyncMock(return_value=sent)
+
+    await sync_command(update, ctx)
+    text = sent.edit_text.call_args.args[0]
+    assert "уже" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_sync_command_rejects_non_owner(tmp_path, monkeypatch):
+    """Owner-only command: a stranger gets no response and run_sync is never called."""
+    from src.bot.handlers.commands import sync_command
+
+    called = {"hits": 0}
+
+    async def fake_run_sync(*a, **kw):
+        called["hits"] += 1
+        return sync_deleted.SyncResult(checked=0, deleted=0)
+
+    monkeypatch.setattr(sync_deleted, "run_sync", fake_run_sync)
+
+    conn = _setup_db(tmp_path)
+    settings = MagicMock(owner_telegram_id=42)
+    ctx = MagicMock()
+    ctx.application.bot_data = {"settings": settings, "conn": conn}
+
+    update = MagicMock()
+    update.effective_user.id = 999  # not owner
+    update.message.reply_text = AsyncMock()
+
+    await sync_command(update, ctx)
+    assert called["hits"] == 0
+    update.message.reply_text.assert_not_called()

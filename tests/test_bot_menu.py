@@ -5,7 +5,7 @@ from src.bot.main import _setup_bot_menu
 
 
 @pytest.mark.asyncio
-async def test_setup_bot_menu_publishes_seven_commands():
+async def test_setup_bot_menu_publishes_expected_commands():
     """post_init wires up the dropdown 'Меню' next to the input field."""
     app = MagicMock()
     app.bot.set_my_commands = AsyncMock()
@@ -15,7 +15,9 @@ async def test_setup_bot_menu_publishes_seven_commands():
     app.bot.set_my_commands.assert_awaited_once()
     cmds = app.bot.set_my_commands.call_args[0][0]
     names = [c.command for c in cmds]
-    assert names == ["help", "status", "stats", "mcp", "export", "models", "reset"]
+    assert names == [
+        "help", "status", "stats", "mcp", "export", "models", "sync", "reset",
+    ]
     # All entries must have a description (non-empty)
     assert all(c.description for c in cmds)
 

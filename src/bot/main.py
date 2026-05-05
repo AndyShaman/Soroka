@@ -32,6 +32,7 @@ BOT_MENU_COMMANDS = [
     BotCommand("mcp", "Конфиг для MCP-сервера"),
     BotCommand("export", "Скачать архив базы"),
     BotCommand("models", "Сменить AI-модели"),
+    BotCommand("sync", "Проверить удалённые сообщения"),
     BotCommand("reset", "Сбросить состояние диалога"),
 ]
 
