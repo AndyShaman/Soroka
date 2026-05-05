@@ -8,9 +8,27 @@ from collections import defaultdict
 logger = logging.getLogger(__name__)
 
 FLUSH_DELAY_SEC = 1.5
+PER_PHOTO_OCR_CAP = 500
+MIN_OCR_FRAGMENT_CHARS = 20
 
 _pending: dict[tuple[int, str], list] = defaultdict(list)
 _timers: dict[tuple[int, str], asyncio.Task] = {}
+
+
+def _build_body(caption: str | None, ocr_fragments: list[str]) -> str:
+    """Caption first (full), then each OCR fragment (truncated to
+    PER_PHOTO_OCR_CAP). Fragments shorter than MIN_OCR_FRAGMENT_CHARS
+    after strip are dropped — OCR on stylized images often produces a
+    handful of garbage characters that hurt search."""
+    parts = []
+    if caption and caption.strip():
+        parts.append(caption.strip())
+    for frag in ocr_fragments:
+        s = frag.strip()
+        if len(s) < MIN_OCR_FRAGMENT_CHARS:
+            continue
+        parts.append(s[:PER_PHOTO_OCR_CAP])
+    return "\n\n".join(parts)
 
 
 def _pick_anchor(msgs):

@@ -123,3 +123,37 @@ def test_merged_caption_concatenates_if_multiple():
 def test_merged_caption_none_when_no_captions():
     msgs = [_make_msg(chat_id=10, msg_id=1, mgid="x", caption=None)]
     assert media_group._merged_caption(msgs) is None
+
+
+def test_build_body_caption_first_then_ocr_fragments():
+    """Caption dominates the embedding/BM25 because it goes first. OCR
+    from each photo is appended as a separate paragraph if it has real
+    content (>20 chars after strip)."""
+    body = media_group._build_body(
+        caption="Главный текст поста",
+        ocr_fragments=["Sam Altman: voice models", "noise"],  # 2nd is <20
+    )
+    assert body.startswith("Главный текст поста")
+    assert "Sam Altman: voice models" in body
+    assert "noise" not in body  # too short, dropped
+
+
+def test_build_body_truncates_ocr_per_fragment():
+    """500-char cap per photo: a single noisy screenshot can't drown the
+    caption when there are 5+ photos in the album."""
+    long_ocr = "a" * 1500
+    body = media_group._build_body(caption="hi", ocr_fragments=[long_ocr])
+    assert body == "hi\n\n" + "a" * 500
+
+
+def test_build_body_no_caption_uses_ocr_only():
+    body = media_group._build_body(
+        caption=None,
+        ocr_fragments=["enough text here to keep this fragment around"],
+    )
+    assert body == "enough text here to keep this fragment around"
+
+
+def test_build_body_empty_when_nothing():
+    assert media_group._build_body(caption=None, ocr_fragments=[]) == ""
+    assert media_group._build_body(caption="", ocr_fragments=["x"]) == ""
