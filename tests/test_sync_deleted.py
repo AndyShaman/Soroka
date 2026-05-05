@@ -193,3 +193,30 @@ async def test_run_sync_lock_prevents_concurrent(tmp_path):
         )
     release.set()
     await first
+
+
+@pytest.mark.asyncio
+async def test_daily_sync_callback_invokes_run_sync(tmp_path, monkeypatch):
+    """The cron callback wired in build_app must call run_sync with
+    days=14 and never raise even if run_sync fails."""
+    from src.bot import main as bot_main
+
+    called = {}
+
+    async def fake_run_sync(bot, conn, *, owner_id, owner_telegram_id, days, **kw):
+        called["days"] = days
+        called["owner_id"] = owner_id
+        return sync_deleted.SyncResult(checked=0, deleted=0)
+
+    monkeypatch.setattr(sync_deleted, "run_sync", fake_run_sync)
+
+    conn = _setup_db(tmp_path)
+
+    settings = MagicMock(owner_telegram_id=42)
+    ctx = MagicMock()
+    ctx.application.bot_data = {"settings": settings, "conn": conn}
+    ctx.bot = MagicMock()
+
+    await bot_main._daily_sync_job(ctx)
+    assert called["days"] == 14
+    assert called["owner_id"] == 42

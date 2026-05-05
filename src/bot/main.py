@@ -1,9 +1,11 @@
+import datetime
 import logging
 
 from telegram import BotCommand, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, ApplicationBuilder
 
+from src.core import sync_deleted
 from src.core.db import open_db, init_schema
 from src.core.owners import create_or_get_owner, seed_vps_from_env
 from src.core.settings import load_settings
@@ -46,6 +48,28 @@ async def _setup_bot_menu(app) -> None:
         logging.getLogger(__name__).warning("bot menu publish failed: %s", e)
 
 
+async def _daily_sync_job(ctx) -> None:
+    """Nightly probe of recent notes for deleted Telegram sources.
+    Wrapped in try/except so a sync failure cannot crash the bot loop."""
+    settings = ctx.application.bot_data["settings"]
+    conn = ctx.application.bot_data["conn"]
+    try:
+        result = await sync_deleted.run_sync(
+            ctx.bot, conn,
+            owner_id=settings.owner_telegram_id,
+            owner_telegram_id=settings.owner_telegram_id,
+            days=14,
+        )
+        logging.getLogger(__name__).info(
+            "daily sync done: checked=%d deleted=%d",
+            result.checked, result.deleted,
+        )
+    except sync_deleted.BusyError:
+        logging.getLogger(__name__).info("daily sync skipped: already running")
+    except Exception:
+        logging.getLogger(__name__).exception("daily sync failed")
+
+
 def build_app(settings, conn) -> Application:
     app = ApplicationBuilder().token(settings.telegram_bot_token).build()
     app.bot_data["settings"] = settings
@@ -58,6 +82,13 @@ def build_app(settings, conn) -> Application:
     register_search_handlers(app)
     register_search_callbacks(app)
     register_help_buttons(app)
+
+    # 22:00 UTC == 01:00 Moscow time (Russia has no DST since 2014).
+    app.job_queue.run_daily(
+        _daily_sync_job,
+        time=datetime.time(hour=22, minute=0, tzinfo=datetime.timezone.utc),
+        name="daily_sync_deleted",
+    )
     return app
 
 
