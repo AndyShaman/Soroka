@@ -28,6 +28,7 @@ def _make_update(chat_id, text=None, caption=None, edited=False, message_id=100)
     post.message_id = message_id
     post.text = text
     post.caption = caption
+    post.media_group_id = None
     return update
 
 
@@ -154,3 +155,56 @@ async def test_channel_handler_sets_thin_reaction_on_thin_extract(tmp_path):
     last_call = ctx.bot.set_message_reaction.await_args_list[-1]
     reaction_list = last_call.kwargs["reaction"]
     assert reaction_list[0].emoji == "🤷"
+
+
+@pytest.mark.asyncio
+async def test_channel_handler_routes_media_group_to_buffer(tmp_path):
+    """A message with media_group_id must NOT take the single-message
+    path (_route_and_ingest); it goes to the album buffer instead."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=42)
+    advance_setup_step(conn, 42, "done")
+    update_owner_field(conn, 42, "inbox_chat_id", -1001234)
+
+    ctx = _make_ctx(conn)
+    update = _make_update(chat_id=-1001234, caption="album", message_id=500)
+    update.channel_post.media_group_id = "mg-1"
+    update.channel_post.photo = [
+        MagicMock(file_id="x", file_unique_id="x", file_size=1)
+    ]
+
+    with patch(
+        "src.bot.handlers.channel._route_and_ingest", new=AsyncMock()
+    ) as routed, patch(
+        "src.bot.handlers.channel.media_group.buffer_message",
+        new=AsyncMock(),
+    ) as buffered:
+        await channel_handler(update, ctx)
+        routed.assert_not_called()
+        buffered.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_channel_handler_single_message_unchanged(tmp_path):
+    """Regression: a normal single message (media_group_id=None) still
+    goes through _route_and_ingest as before."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=42)
+    advance_setup_step(conn, 42, "done")
+    update_owner_field(conn, 42, "inbox_chat_id", -1001234)
+
+    ctx = _make_ctx(conn)
+    update = _make_update(chat_id=-1001234, text="just text", message_id=600)
+
+    with patch(
+        "src.bot.handlers.channel._route_and_ingest",
+        new=AsyncMock(return_value=None),
+    ) as routed, patch(
+        "src.bot.handlers.channel.media_group.buffer_message",
+        new=AsyncMock(),
+    ) as buffered:
+        await channel_handler(update, ctx)
+        routed.assert_awaited_once()
+        buffered.assert_not_called()

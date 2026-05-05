@@ -8,6 +8,7 @@ from telegram.ext import Application, MessageHandler, ContextTypes, filters
 from src.adapters.deepgram import DeepgramClient
 from src.adapters.jina import JinaClient
 from src.adapters.tg_files import is_oversized
+from src.bot.handlers import media_group
 from src.bot.handlers.reactions import (
     set_reaction, PROCESSING, SUCCESS, FAILURE, OVERSIZED, THIN,
 )
@@ -40,6 +41,15 @@ async def channel_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
     chat_id = msg.chat.id
     msg_id = msg.message_id
+
+    if msg.media_group_id is not None:
+        # Album: defer ingest, let media_group.buffer_message collect every
+        # message of the group and flush once as a single note.
+        await set_reaction(ctx.bot, chat_id, msg_id, PROCESSING)
+        await media_group.buffer_message(
+            msg, ctx, flush_callback=media_group.flush_album,
+        )
+        return
 
     await set_reaction(ctx.bot, chat_id, msg_id, PROCESSING)
     try:
