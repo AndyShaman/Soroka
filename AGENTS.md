@@ -7,25 +7,34 @@ deploying Soroka. Humans should read `README.md`.
 
 Ask the user for these (and only these) before doing anything else:
 
-- `VPS`               — `user@host`, e.g. `root@1.2.3.4` (must already accept the user's SSH key without password)
+- `VPS`               — `user@host`, e.g. `root@1.2.3.4` or an SSH alias
 - `TELEGRAM_BOT_TOKEN`— from @BotFather
 - `OWNER_TELEGRAM_ID` — from @userinfobot
 
 DO NOT ask the user for any other keys (Jina, Deepgram, OpenRouter, GitHub).
 Those are collected later via the bot's `/start` wizard, in Telegram.
 
-If `ssh "$VPS" 'echo ok'` fails with a password prompt or permission denied,
-stop and tell the user to run `ssh-copy-id "$VPS"` first.
+If `ssh "$VPS" 'echo ok'` fails (password prompt or permission denied), stop
+and tell the user to set up an SSH key first — either `ssh-copy-id "$VPS"` or
+the [3x-ui-skill Part 1](https://github.com/AndyShaman/3x-ui-skill) (server
+hardening flow that creates a non-root user with a key).
 
 ## Deployment
 
-Run the installer script in non-interactive mode:
+The installer runs **on the VPS itself** (not from the local machine). Drive it
+through SSH with the non-interactive flags:
 
 ```bash
-./bin/install \
-  --vps "$VPS" \
-  --tg-token "$TELEGRAM_BOT_TOKEN" \
-  --owner-id "$OWNER_TELEGRAM_ID"
+ssh "$VPS" "git clone https://github.com/AndyShaman/soroka.git \
+  && cd soroka \
+  && ./bin/install --tg-token '$TELEGRAM_BOT_TOKEN' --owner-id '$OWNER_TELEGRAM_ID'"
+```
+
+If the repo already exists from a previous attempt:
+
+```bash
+ssh "$VPS" "cd soroka && git pull --ff-only \
+  && ./bin/install --tg-token '$TELEGRAM_BOT_TOKEN' --owner-id '$OWNER_TELEGRAM_ID'"
 ```
 
 Verify success:
@@ -47,27 +56,27 @@ After successful deployment, tell the user:
 # Bot logs
 ssh "$VPS" docker logs --tail 200 soroka-bot
 
-# Setup wizard state
-ssh "$VPS" \
-  "sqlite3 /opt/soroka/data/soroka.db 'SELECT setup_step FROM owners'"
+# Setup wizard state — DB lives inside the repo dir, not /opt/soroka
+ssh "$VPS" "cd soroka && sqlite3 data/soroka.db 'SELECT setup_step FROM owners'"
 
 # Note count
-ssh "$VPS" \
-  "sqlite3 /opt/soroka/data/soroka.db 'SELECT count(*) FROM notes'"
+ssh "$VPS" "cd soroka && sqlite3 data/soroka.db 'SELECT count(*) FROM notes'"
 ```
 
 ## Updating
 
-After `git pull` in the local clone:
-
 ```bash
-./bin/update "$VPS"
+ssh "$VPS" "cd soroka && ./bin/update"
 ```
+
+`bin/update` runs `git pull --ff-only` and `docker compose up -d --build` on the
+VPS — no local rsync, no flags.
 
 ## Architecture, in 60 seconds
 
 - Single Docker container (`soroka-bot`) running `python -m src.bot.main`.
-- SQLite database at `/opt/soroka/data/soroka.db` (FTS5 + sqlite-vec).
+- SQLite database at `<repo>/data/soroka.db` (FTS5 + sqlite-vec). Repo lives
+  wherever the user did `git clone` — typically `~/soroka` or `/root/soroka`.
 - All user secrets except `TELEGRAM_BOT_TOKEN` and `OWNER_TELEGRAM_ID` live in
   the `owners` table, populated through `/start` in Telegram.
 - The MCP server (`src/mcp/server.py`) is invoked on demand via
@@ -76,8 +85,8 @@ After `git pull` in the local clone:
 
 ## Files you must NOT touch on the VPS
 
-- `/opt/soroka/.env` — installer wrote it, leave it alone
-- `/opt/soroka/data/soroka.db` — SQLite database
-- `/opt/soroka/data/attachments/` — user files
+- `<repo>/.env` — installer wrote it, leave it alone
+- `<repo>/data/soroka.db` — SQLite database
+- `<repo>/data/attachments/` — user files
 
 If `/start` fails, ask the user to run `/cancel` and `/start` again.

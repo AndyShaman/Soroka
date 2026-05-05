@@ -1,68 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Soroka updater — re-syncs the local repo to a VPS and rebuilds the container.
-# Usage: bin/update <user@host>
-# Prerequisite: bot already installed on this VPS via bin/install.
-
-VPS="${1:?usage: bin/update <user@host>}"
-
-if ! ssh "$VPS" 'sudo -n true' 2>/dev/null; then
-  echo "✗ Нужен sudo без пароля на $VPS (для записи в /opt/soroka)" >&2
-  exit 1
-fi
-
-# Resolve VPS user/host from the local ssh config so the bot can autopopulate
-# the MCP config without a manual /setvps step. ssh -G expands the alias and
-# prints the effective `user`/`hostname`. We push BOTH the resolved user and
-# the literal alias the operator typed — Claude Desktop will read the alias
-# from the user's ~/.ssh/config too, so the alias is what we want in the JSON.
-VPS_HOST_ALIAS="${VPS#*@}"
-VPS_HOST_ALIAS="${VPS_HOST_ALIAS%%:*}"
-SSH_USER="$(ssh -G "$VPS" 2>/dev/null | awk '/^user /{print $2; exit}')"
-if [[ -z "${SSH_USER:-}" ]]; then
-  echo "✗ Не удалось определить ssh user для $VPS — обнови ~/.ssh/config" >&2
-  exit 1
-fi
-echo "→ MCP-конфиг будет ссылаться на ${SSH_USER}@${VPS_HOST_ALIAS}"
+# Soroka updater — runs ON the VPS, in the repo directory.
+# Pulls latest code, rebuilds the container, refreshes /usr/local/bin/soroka-mcp.
+#
+# Usage:
+#   cd ~/soroka     # or wherever you cloned it
+#   ./bin/update
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-echo "→ Заливаю код из $REPO_DIR в /opt/soroka/ ..."
-rsync -az --delete --rsync-path='sudo rsync' \
-  --exclude='.git/' --exclude='data/' --exclude='attachments/' \
-  --exclude='__pycache__/' --exclude='.venv/' --exclude='*.pyc' \
-  --exclude='.pytest_cache/' --exclude='*.egg-info/' \
-  --exclude='dist/' --exclude='build/' --exclude='.env' \
-  --exclude='tests/fixtures/' --exclude='.DS_Store' \
-  "$REPO_DIR/" "$VPS:/opt/soroka/"
+cd "$REPO_DIR"
 
-# Старые установки (до коммита, добавившего usermod в bin/install) могли
-# оставить ssh-юзера вне группы docker. soroka-mcp запускает `docker exec`
-# без sudo, и Claude Desktop падает на /var/run/docker.sock — фиксим здесь
-# идемпотентно для обратной совместимости.
-echo "→ Проверяю членство в группе docker..."
-ssh "$VPS" 'if ! id -nG | grep -qw docker; then
-  echo "  добавляю $(id -un) в группу docker..."
-  sudo -n usermod -aG docker "$(id -un)"
-fi'
+if [[ $EUID -eq 0 ]]; then
+  SUDO=""
+elif sudo -n true 2>/dev/null; then
+  SUDO="sudo -n"
+else
+  echo "✗ нужен root или passwordless sudo" >&2
+  exit 1
+fi
 
-echo "→ Прописываю SOROKA_VPS_USER/SOROKA_VPS_HOST в .env на сервере..."
-# Idempotent upsert: drop any prior SOROKA_VPS_* lines, then append the
-# current values. Bot reads them at startup and writes into the DB only if
-# the corresponding column is empty — manual /setvps still wins.
-ssh "$VPS" "sudo -n bash -c \"
-  set -euo pipefail
-  cd /opt/soroka
-  touch .env
-  grep -vE '^SOROKA_VPS_(USER|HOST)=' .env > .env.new || true
-  echo 'SOROKA_VPS_USER=${SSH_USER}' >> .env.new
-  echo 'SOROKA_VPS_HOST=${VPS_HOST_ALIAS}' >> .env.new
-  mv .env.new .env
-\""
+echo "→ git pull..."
+git pull --ff-only
 
 echo "→ Пересобираю контейнер..."
-ssh "$VPS" 'cd /opt/soroka && \
-  sudo -n docker compose up -d --build && \
-  sudo -n cp scripts/soroka-mcp /usr/local/bin/ && \
-  sudo -n chmod +x /usr/local/bin/soroka-mcp'
+$SUDO docker compose up -d --build
+
+echo "→ Обновляю /usr/local/bin/soroka-mcp..."
+$SUDO cp scripts/soroka-mcp /usr/local/bin/
+$SUDO chmod +x /usr/local/bin/soroka-mcp
+
 echo "✓ обновлено"

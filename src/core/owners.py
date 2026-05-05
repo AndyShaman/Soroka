@@ -59,8 +59,8 @@ def advance_setup_step(conn: sqlite3.Connection, telegram_id: int, step: SetupSt
 
 def seed_vps_from_env(conn: sqlite3.Connection, telegram_id: int) -> None:
     """Populate vps_user/vps_host from SOROKA_VPS_USER/SOROKA_VPS_HOST env vars
-    so /mcp works out of the box after `bin/update`. A manual /setvps still
-    wins: we only write fields that are currently empty in the DB."""
+    if the user has set them in .env manually. A manual /setvps still wins:
+    we only write fields that are currently empty in the DB."""
     user = (os.environ.get("SOROKA_VPS_USER") or "").strip()
     host = (os.environ.get("SOROKA_VPS_HOST") or "").strip()
     if not user or not host:

@@ -20,3 +20,6 @@ uv.lock
 *.log
 .env.local
 .env.*.local
+keys.txt
+premortem-report-*.html
+premortem-transcript-*.md

@@ -1,24 +1,67 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Soroka installer — copies the local repo to a VPS via rsync over SSH,
-# writes a minimal .env, and starts the bot via docker compose.
+# Soroka installer — runs ON the VPS, in the directory where the repo
+# was cloned. Sets up Docker, writes .env, starts the container.
 #
-# Prerequisite: `ssh <VPS>` must connect without a password
-# (your key is already authorized on the server).
+# Usage:
+#   ssh user@vps                                                 # любым способом
+#   git clone https://github.com/AndyShaman/soroka.git
+#   cd soroka
+#   ./bin/install
+#
+# Optional flags (skip prompts):
+#   --tg-token <TOKEN>      Telegram bot token (от @BotFather)
+#   --owner-id <ID>         Твой личный Telegram ID (от @userinfobot)
 
-VPS=""
 TG_TOKEN=""
 OWNER_ID=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --vps) VPS="$2"; shift 2;;
     --tg-token) TG_TOKEN="$2"; shift 2;;
     --owner-id) OWNER_ID="$2"; shift 2;;
     *) echo "unknown flag: $1" >&2; exit 1;;
   esac
 done
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+  cat >&2 <<MSG
+
+✗ bin/install запускается ПРЯМО НА VPS (Linux).
+
+  Похоже, ты запустил его на своём Mac/Windows локально.
+  Зайди сначала на сервер любым способом (ssh, web-консоль, PuTTY),
+  и уже там:
+
+    git clone https://github.com/AndyShaman/soroka.git
+    cd soroka
+    ./bin/install
+MSG
+  exit 1
+fi
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_DIR"
+
+# sudo prefix: пусто для root, sudo -n для passwordless. Иначе — фейл с подсказкой.
+if [[ $EUID -eq 0 ]]; then
+  SUDO=""
+elif sudo -n true 2>/dev/null; then
+  SUDO="sudo -n"
+else
+  cat >&2 <<MSG
+
+✗ Нужен root или passwordless sudo на этом сервере.
+
+  Варианты:
+   • Зайти на VPS как root: ssh root@<host>
+   • Или один раз настроить passwordless sudo текущему юзеру:
+       echo "\$USER ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/\$USER
+       sudo chmod 440 /etc/sudoers.d/\$USER
+MSG
+  exit 1
+fi
 
 read_if_empty() {
   local var_name="$1" prompt="$2"
@@ -28,246 +71,120 @@ read_if_empty() {
   fi
 }
 
-verify_ssh() {
-  ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
-      "$1" 'echo ok' >/dev/null 2>&1
-}
-
-print_ssh_diag() {
-  cat >&2 <<DIAG
-
-  ✗ SSH-подключение к '$1' не удалось.
-
-  Скорее всего:
-   • Ты ввёл 'user@host', но ключ к этому пользователю не загружен.
-     → Используй alias из ~/.ssh/config — там обычно прописан и
-       нужный пользователь, и нужный ключ. Посмотри какие alias'ы
-       у тебя есть:  grep -E '^Host ' ~/.ssh/config
-   • Либо ключ просто не на сервере. Решение:
-       ssh-copy-id $1
-   • Либо у тебя пароль вместо ключа — настрой ключ сначала.
-
-  Проверь руками:  ssh $1
-  Должно зайти без пароля.
-DIAG
-}
-
 echo "🐦 Soroka — installer"
 echo
-echo "Что нужно: SSH должен заходить на сервер без пароля."
-echo
-echo "──────────────────────────────────────────────────────────────"
-echo "1/3 → SSH-адрес сервера"
-echo
-echo "Какой командой ты обычно заходишь на свой VPS?"
-echo "Возьми из неё то, что идёт ПОСЛЕ слова 'ssh' — это и есть адрес."
-echo
-echo "  Команда                       Сюда вводи"
-echo "  ─────────────────────────     ──────────────────"
-echo "  ssh root@1.2.3.4              root@1.2.3.4"
-echo "  ssh ubuntu@server.com         ubuntu@server.com"
-echo "  ssh myvps                     myvps           (alias из ~/.ssh/config)"
-echo
-echo "Главное: эта команда должна заходить БЕЗ пароля (по ключу)."
-echo "Если просит пароль — сначала один раз: ssh-copy-id <твой_адрес>"
+echo "Что я сейчас сделаю:"
+echo "  • поставлю docker и docker compose (если ещё нет)"
+echo "  • запишу .env в $REPO_DIR/.env"
+echo "  • запущу контейнер soroka-bot"
+echo "  • положу /usr/local/bin/soroka-mcp"
 echo
 
-# Если VPS задан флагом — одна попытка. Иначе — спрашиваем до успеха
-# (или Ctrl+C). Подключение проверяем СРАЗУ, чтобы не собирать токен и
-# Telegram-ID, если SSH не работает.
-if [[ -n "$VPS" ]]; then
-  echo "→ Проверяю SSH-подключение к '$VPS'..."
-  if ! verify_ssh "$VPS"; then
-    print_ssh_diag "$VPS"
-    exit 1
-  fi
-  echo "  ✓ SSH OK"
-else
-  while true; do
-    read_if_empty VPS "SSH-адрес"
-    echo
-    echo "→ Проверяю SSH-подключение к '$VPS'..."
-    if verify_ssh "$VPS"; then
-      echo "  ✓ SSH OK"
-      break
-    fi
-    print_ssh_diag "$VPS"
-    echo
-    echo "Попробуй ещё раз. Прервать — Ctrl+C."
-    echo
-    VPS=""
-  done
-fi
-
-echo
 echo "──────────────────────────────────────────────────────────────"
-echo "2/3 → Токен Telegram-бота"
+echo "1/2 → Токен Telegram-бота"
 echo
-echo "Получишь у @BotFather: команда /newbot → длинная строка вида"
-echo
-echo "    1234567:AAC××××××××××××××××××××××××××××××××××××"
-echo
-echo "(числа, двоеточие, буквенно-цифровая часть — всего около 45"
-echo "символов). Скопируй её целиком."
+echo "Получи у @BotFather: команда /newbot → длинная строка вида"
+echo "  1234567:AAC××××××××××××××××××××××××××××××××××××"
 echo
 read_if_empty TG_TOKEN "Токен бота"
 
 echo
 echo "──────────────────────────────────────────────────────────────"
-echo "3/3 → Твой личный Telegram-ID (число)"
+echo "2/2 → Твой Telegram-ID (число)"
 echo
-echo "Это ID твоего профиля, НЕ канала. Узнать: напиши /start боту"
-echo "@userinfobot — он пришлёт число вроде 123456789."
+echo "Это ID твоего профиля. Узнай: напиши /start боту @userinfobot —"
+echo "он пришлёт число вроде 123456789."
 echo
-read_if_empty OWNER_ID "Твой Telegram-ID"
+read_if_empty OWNER_ID "Telegram-ID"
 
 echo
 echo "──────────────────────────────────────────────────────────────"
-echo "Что я сейчас сделаю на сервере (ничего за пределами этих путей"
-echo "не трогаю — соседние проекты в безопасности):"
-echo "  • проверю sudo без пароля"
-echo "  • доставлю rsync/docker — только если их ещё нет"
-echo "  • запишу код в /opt/soroka/"
-echo "  • положу обёртку /usr/local/bin/soroka-mcp"
-echo "  • запущу контейнер soroka-bot"
-echo
-
-echo "→ Проверяю sudo на сервере..."
-if ! ssh "$VPS" 'sudo -n true' 2>/dev/null; then
-  cat >&2 <<SUDO_DIAG
-
-  ✗ На сервере нужен sudo БЕЗ пароля
-    (для записи в /opt/soroka и /usr/local/bin/soroka-mcp).
-
-  Варианты:
-   • Зайти на сервер как root и запустить установщик с этим адресом:
-       ssh root@<host>
-   • Или один раз настроить себе passwordless sudo на сервере:
-       echo "\$USER ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/\$USER
-       sudo chmod 440 /etc/sudoers.d/\$USER
-
-SUDO_DIAG
-  exit 1
-fi
-echo "  ✓ sudo OK"
-
 echo "→ Проверяю зависимости (что уже стоит — не трогаю)..."
-ssh "$VPS" bash <<'INSTALL_DEPS'
-set -euo pipefail
 
-NEED_RSYNC=0
 NEED_DOCKER=0
 NEED_COMPOSE=0
-command -v rsync >/dev/null 2>&1 || NEED_RSYNC=1
 command -v docker >/dev/null 2>&1 || NEED_DOCKER=1
-sudo -n docker compose version >/dev/null 2>&1 || NEED_COMPOSE=1
+$SUDO docker compose version >/dev/null 2>&1 || NEED_COMPOSE=1
 
-if (( NEED_RSYNC == 0 && NEED_DOCKER == 0 && NEED_COMPOSE == 0 )); then
-  echo "  всё уже стоит"
-  exit 0
-fi
+if (( NEED_DOCKER || NEED_COMPOSE )); then
+  # Ждём, если apt сейчас занят (unattended-upgrades, daily timer и т.п.).
+  # Не убиваем чужой процесс — просто терпеливо ждём.
+  WAITED=0
+  WARNED=0
+  while $SUDO fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do
+    if (( WARNED == 0 )); then
+      echo "  apt сейчас занят другим процессом — жду до 15 минут..."
+      $SUDO fuser -v /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock 2>&1 | head -10 || true
+      WARNED=1
+    fi
+    if (( WAITED >= 900 )); then
+      echo "  ✗ apt всё ещё занят после 15 минут." >&2
+      exit 1
+    fi
+    sleep 10
+    WAITED=$((WAITED + 10))
+  done
 
-# Ждём, если apt сейчас занят (unattended-upgrades, daily timer и т.п.).
-# Не убиваем чужой процесс — просто терпеливо ждём.
-WAITED=0
-WARNED=0
-while sudo -n fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do
-  if (( WARNED == 0 )); then
-    echo "  apt сейчас занят другим процессом — жду до 15 минут..."
-    sudo -n fuser -v /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock 2>&1 | head -10 || true
-    WARNED=1
-  fi
-  if (( WAITED >= 900 )); then
-    echo "  ✗ apt всё ещё занят после 15 минут." >&2
-    echo "    Что работает:  ps aux | grep -E 'apt|dpkg|unattended'" >&2
-    echo "    Если процесс висит сутки — он зомби, дай команду kill -KILL." >&2
-    exit 1
-  fi
-  sleep 10
-  WAITED=$((WAITED + 10))
-done
-
-export DEBIAN_FRONTEND=noninteractive
-
-# apt-get update неизбежно ругнётся warning'ом, если у пользователя в
-# sources.list.d/ есть недоступный PPA (deadsnakes и т.п.) — нас интересуют
-# только официальные репо Ubuntu для rsync/docker.io, так что W: фильтруем.
-sudo -n apt-get update -qq 2>&1 | grep -vE '^(W:|N:|Get:|Ign:|Hit:)' || true
-
-if (( NEED_RSYNC )); then
-  echo "  ставлю rsync..."
-  sudo -n apt-get install -y -qq rsync
+  export DEBIAN_FRONTEND=noninteractive
+  $SUDO apt-get update -qq 2>&1 | grep -vE '^(W:|N:|Get:|Ign:|Hit:)' || true
 fi
 
 if (( NEED_DOCKER )); then
   echo "  ставлю docker.io (engine из основных репо Ubuntu)..."
-  sudo -n apt-get install -y -qq docker.io
+  $SUDO apt-get install -y -qq docker.io
 fi
 
 if (( NEED_COMPOSE )); then
   # docker compose v2 нужен как plugin. В разных версиях Ubuntu пакет
-  # называется по-разному (docker-compose-v2 на noble, docker-compose-plugin
-  # только в репо Docker Inc., на jammy в основных репо нет вообще). Чтобы
-  # не лезть в системные sources.list.d/ и не трогать чужие настройки apt —
-  # ставим один бинарник в штатное место для plugins. Docker сам его найдёт.
+  # называется по-разному. Чтобы не лезть в системные sources.list.d/ —
+  # ставим один бинарник в штатное место для plugins.
   echo "  ставлю docker compose v2 (бинарник от Docker Inc.)..."
   ARCH=$(uname -m)
   case "$ARCH" in
     x86_64|aarch64) ;;
     *) echo "  ✗ архитектура $ARCH не поддерживается официальным релизом" >&2; exit 1;;
   esac
-  sudo -n mkdir -p /usr/local/lib/docker/cli-plugins
-  sudo -n curl -fsSL \
+  $SUDO mkdir -p /usr/local/lib/docker/cli-plugins
+  $SUDO curl -fsSL \
     "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${ARCH}" \
     -o /usr/local/lib/docker/cli-plugins/docker-compose
-  sudo -n chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+  $SUDO chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 fi
 
-# Claude Desktop вызывает /usr/local/bin/soroka-mcp по SSH под текущим юзером
-# и тот делает `docker exec` без sudo. Если юзер не в группе docker — отказ
-# на /var/run/docker.sock. Идемпотентно добавляем в группу. Свежая SSH-сессия
-# (новый коннект Claude Desktop) подхватит автоматически — релогин не нужен.
-if ! id -nG | grep -qw docker; then
+# soroka-mcp вызывается по SSH под текущим юзером и делает `docker exec`
+# без sudo. Если юзер не в группе docker — отказ на /var/run/docker.sock.
+# Идемпотентно добавляем. Свежий SSH-коннект подхватит автоматически.
+# root и так имеет доступ — пропускаем.
+if [[ $EUID -ne 0 ]] && ! id -nG | grep -qw docker; then
   echo "  добавляю $(id -un) в группу docker (для soroka-mcp без sudo)..."
-  sudo -n usermod -aG docker "$(id -un)"
+  $SUDO usermod -aG docker "$(id -un)"
 fi
-INSTALL_DEPS
 echo "  ✓ зависимости готовы"
 
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-echo "→ Заливаю код из $REPO_DIR в /opt/soroka/ ..."
-ssh "$VPS" 'sudo -n mkdir -p /opt/soroka'
-rsync -az --delete --rsync-path='sudo rsync' \
-  --exclude='.git/' --exclude='data/' --exclude='attachments/' \
-  --exclude='__pycache__/' --exclude='.venv/' --exclude='*.pyc' \
-  --exclude='.pytest_cache/' --exclude='*.egg-info/' \
-  --exclude='dist/' --exclude='build/' --exclude='.env' \
-  --exclude='tests/fixtures/' --exclude='.DS_Store' \
-  "$REPO_DIR/" "$VPS:/opt/soroka/"
-echo "  ✓ код загружен"
-
-echo "→ Записываю .env и запускаю контейнер..."
-ssh "$VPS" bash <<EOF
-set -euo pipefail
-cd /opt/soroka
-
-sudo -n tee .env >/dev/null <<ENV
+echo "→ Записываю .env..."
+$SUDO tee .env >/dev/null <<ENV
 TELEGRAM_BOT_TOKEN=$TG_TOKEN
 OWNER_TELEGRAM_ID=$OWNER_ID
 ENV
-sudo -n chmod 600 .env
+$SUDO chmod 600 .env
 
-sudo -n docker compose up -d --build
+echo "→ Запускаю контейнер..."
+$SUDO docker compose up -d --build
 
-sudo -n cp scripts/soroka-mcp /usr/local/bin/
-sudo -n chmod +x /usr/local/bin/soroka-mcp
+echo "→ Ставлю /usr/local/bin/soroka-mcp..."
+$SUDO cp scripts/soroka-mcp /usr/local/bin/
+$SUDO chmod +x /usr/local/bin/soroka-mcp
 
-sudo -n docker ps --format '{{.Names}}' | grep -q soroka-bot && echo "  ✓ бот запущен"
-EOF
+if $SUDO docker ps --format '{{.Names}}' | grep -q soroka-bot; then
+  echo "  ✓ бот запущен"
+fi
 
 cat <<MSG
 
 🎉 Готово!
+
 Открой Telegram, найди своего бота и отправь /start.
 Дальше всё настроишь в чате с ботом.
+
+Обновлять бота:  cd $REPO_DIR && ./bin/update
 MSG
