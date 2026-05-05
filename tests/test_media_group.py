@@ -157,3 +157,23 @@ def test_build_body_no_caption_uses_ocr_only():
 def test_build_body_empty_when_nothing():
     assert media_group._build_body(caption=None, ocr_fragments=[]) == ""
     assert media_group._build_body(caption="", ocr_fragments=["x"]) == ""
+
+
+def test_kind_post_when_caption_long():
+    """Same threshold as the existing single-photo rule: caption ≥30
+    chars OR contains a URL → 'post'; else 'image'."""
+    long_caption = "a" * 30
+    assert media_group._album_kind(long_caption) == "post"
+
+
+def test_kind_post_when_caption_has_url():
+    assert media_group._album_kind("see https://example.com") == "post"
+
+
+def test_kind_image_when_caption_short():
+    assert media_group._album_kind("котики") == "image"
+
+
+def test_kind_image_when_no_caption():
+    assert media_group._album_kind(None) == "image"
+    assert media_group._album_kind("") == "image"

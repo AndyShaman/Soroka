@@ -5,6 +5,8 @@ import asyncio
 import logging
 from collections import defaultdict
 
+from src.core.kind import _is_post_caption
+
 logger = logging.getLogger(__name__)
 
 FLUSH_DELAY_SEC = 1.5
@@ -13,6 +15,13 @@ MIN_OCR_FRAGMENT_CHARS = 20
 
 _pending: dict[tuple[int, str], list] = defaultdict(list)
 _timers: dict[tuple[int, str], asyncio.Task] = {}
+
+
+def _album_kind(caption: str | None) -> str:
+    """An album with a substantive caption is a 'post' (the caption is
+    the content); otherwise it's a plain 'image' album. Same rule as the
+    existing single-photo path uses, so behaviour stays consistent."""
+    return "post" if _is_post_caption(caption) else "image"
 
 
 def _build_body(caption: str | None, ocr_fragments: list[str]) -> str:
