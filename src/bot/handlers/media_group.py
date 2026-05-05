@@ -13,6 +13,22 @@ _pending: dict[tuple[int, str], list] = defaultdict(list)
 _timers: dict[tuple[int, str], asyncio.Task] = {}
 
 
+def _pick_anchor(msgs):
+    """The single message we use as the note's tg_message_id. Smallest
+    id is deterministic and roughly matches Telegram delivery order."""
+    return min(msgs, key=lambda m: m.message_id)
+
+
+def _merged_caption(msgs):
+    """Telegram normally puts the post caption on exactly one message of
+    a media group. Concatenate defensively if multiple are present so we
+    don't silently lose content."""
+    captions = [m.caption.strip() for m in msgs if m.caption and m.caption.strip()]
+    if not captions:
+        return None
+    return "\n\n".join(captions)
+
+
 def _reset_for_tests() -> None:
     """Drop all buffered state. Tests call this in setup so module-level
     globals don't leak between cases."""

@@ -84,3 +84,42 @@ async def test_two_groups_are_independent():
     await asyncio.sleep(0.15)
 
     assert sorted(flush_calls) == ["a", "b"]
+
+
+def test_pick_anchor_uses_smallest_message_id():
+    """Anchor is the smallest message_id — deterministic regardless of
+    the order Telegram delivered them in. We need a single anchor because
+    notes.tg_message_id has UNIQUE(owner_id, chat_id, tg_message_id)."""
+    msgs = [
+        _make_msg(chat_id=10, msg_id=12, mgid="x"),
+        _make_msg(chat_id=10, msg_id=11, mgid="x"),
+        _make_msg(chat_id=10, msg_id=13, mgid="x"),
+    ]
+    anchor = media_group._pick_anchor(msgs)
+    assert anchor.message_id == 11
+
+
+def test_merged_caption_takes_the_one_thats_set():
+    """Telegram puts the post caption on exactly one of the messages in a
+    media group. The other messages have caption=None."""
+    msgs = [
+        _make_msg(chat_id=10, msg_id=1, mgid="x", caption=None),
+        _make_msg(chat_id=10, msg_id=2, mgid="x", caption="real text"),
+        _make_msg(chat_id=10, msg_id=3, mgid="x", caption=None),
+    ]
+    assert media_group._merged_caption(msgs) == "real text"
+
+
+def test_merged_caption_concatenates_if_multiple():
+    """Defensive: if Telegram ever delivers more than one caption (it
+    doesn't today), join them so we don't silently drop one."""
+    msgs = [
+        _make_msg(chat_id=10, msg_id=1, mgid="x", caption="one"),
+        _make_msg(chat_id=10, msg_id=2, mgid="x", caption="two"),
+    ]
+    assert media_group._merged_caption(msgs) == "one\n\ntwo"
+
+
+def test_merged_caption_none_when_no_captions():
+    msgs = [_make_msg(chat_id=10, msg_id=1, mgid="x", caption=None)]
+    assert media_group._merged_caption(msgs) is None
