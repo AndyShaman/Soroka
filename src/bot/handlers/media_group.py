@@ -4,14 +4,26 @@ docs/superpowers/specs/2026-05-05-media-groups-ingest-design.md."""
 import asyncio
 import logging
 from collections import defaultdict
+from pathlib import Path
 
+from src.adapters.extractors.ocr import extract_ocr
+from src.adapters.jina import JinaClient
+from src.adapters.tg_files import is_oversized
+from src.bot.handlers.reactions import (
+    set_reaction, SUCCESS, FAILURE,
+)
+from src.core.attachments import insert_attachment
+from src.core.ingest import _save_or_update_note
 from src.core.kind import _is_post_caption
+from src.core.models import Attachment, Note
+from src.core.owners import get_owner
 
 logger = logging.getLogger(__name__)
 
 FLUSH_DELAY_SEC = 1.5
 PER_PHOTO_OCR_CAP = 500
 MIN_OCR_FRAGMENT_CHARS = 20
+PHOTO_DIR_ROOT = Path("/app/data/attachments")
 
 _pending: dict[tuple[int, str], list] = defaultdict(list)
 _timers: dict[tuple[int, str], asyncio.Task] = {}
@@ -96,3 +108,101 @@ async def _flush_after(key, ctx, flush_callback, delay: float) -> None:
         await flush_callback(msgs, ctx)
     except Exception:
         logger.exception("media_group flush failed for key=%s", key)
+
+
+async def _download_photo(ctx, msg) -> tuple[Path, int] | None:
+    """Download the largest variant of msg.photo to its per-message dir.
+    Returns (local_path, file_size) on success, None on failure."""
+    photo = msg.photo[-1]
+    size = photo.file_size or 0
+    if is_oversized(size):
+        return None
+    try:
+        f = await ctx.bot.get_file(photo.file_id)
+    except Exception:
+        logger.exception("get_file failed for photo %s", photo.file_unique_id)
+        return None
+    local_dir = PHOTO_DIR_ROOT / str(msg.message_id)
+    local_dir.mkdir(parents=True, exist_ok=True)
+    local_path = local_dir / f"photo_{photo.file_unique_id}.jpg"
+    try:
+        await f.download_to_drive(custom_path=str(local_path))
+    except Exception:
+        logger.exception("download failed for photo %s", photo.file_unique_id)
+        return None
+    return local_path, size
+
+
+async def _react_all(ctx, msgs, emoji) -> None:
+    for m in msgs:
+        try:
+            await set_reaction(ctx.bot, m.chat.id, m.message_id, emoji)
+        except Exception:
+            logger.exception("set_reaction failed for %s", m.message_id)
+
+
+async def flush_album(msgs, ctx) -> None:
+    """Take the buffered messages of one media group, download every
+    attached photo, run OCR on each, and persist as a single note with
+    N rows in the attachments table."""
+    settings = ctx.application.bot_data["settings"]
+    conn = ctx.application.bot_data["conn"]
+    owner = get_owner(conn, settings.owner_telegram_id)
+    if owner is None:
+        logger.warning("flush_album: no owner")
+        return
+
+    anchor = _pick_anchor(msgs)
+    caption = _merged_caption(msgs)
+
+    downloaded: list[tuple[object, Path, int]] = []
+    ocr_fragments: list[str] = []
+    for m in msgs:
+        if not m.photo:
+            continue
+        result = await _download_photo(ctx, m)
+        if result is None:
+            continue
+        path, size = result
+        downloaded.append((m, path, size))
+        ocr_fragments.append(extract_ocr(path) or "")
+
+    if not downloaded:
+        logger.warning("flush_album: no photos saved for group")
+        await _react_all(ctx, msgs, FAILURE)
+        return
+
+    body = _build_body(caption, ocr_fragments)
+    kind = _album_kind(caption)
+    fallback_name = downloaded[0][1].name
+    title = (caption or "").splitlines()[0][:80] if caption else fallback_name
+
+    jina = JinaClient(api_key=owner.jina_api_key)
+    note = Note(
+        owner_id=owner.telegram_id,
+        tg_message_id=anchor.message_id,
+        tg_chat_id=anchor.chat.id,
+        kind=kind,
+        title=title,
+        content=body or fallback_name,
+        raw_caption=caption,
+        created_at=int(anchor.date.timestamp()),
+        thin_content=False,
+    )
+    note_id = await _save_or_update_note(
+        conn, jina=jina, note=note, is_edit=False, embed_text=body,
+    )
+    if note_id is None:
+        logger.warning("flush_album: insert lost a duplicate race")
+        return
+
+    for _m, path, size in downloaded:
+        insert_attachment(conn, Attachment(
+            note_id=note_id,
+            file_path=str(path),
+            file_size=size,
+            original_name=path.name,
+            is_oversized=False,
+        ))
+
+    await _react_all(ctx, msgs, SUCCESS)

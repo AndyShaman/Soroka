@@ -1,8 +1,14 @@
 import asyncio
 import pytest
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, AsyncMock
 
 from src.bot.handlers import media_group
+from src.core.db import open_db, init_schema
+from src.core.owners import (
+    create_or_get_owner, advance_setup_step, update_owner_field,
+)
+from src.core.attachments import list_attachments
 
 
 def _make_msg(chat_id: int, msg_id: int, mgid: str, caption=None):
@@ -12,6 +18,34 @@ def _make_msg(chat_id: int, msg_id: int, mgid: str, caption=None):
     m.media_group_id = mgid
     m.caption = caption
     return m
+
+
+def _make_album_msg(chat_id, msg_id, mgid, file_unique_id,
+                    caption=None, file_size=2048):
+    m = MagicMock()
+    m.chat.id = chat_id
+    m.message_id = msg_id
+    m.media_group_id = mgid
+    m.caption = caption
+    m.text = None
+    m.voice = None
+    m.document = None
+    m.date.timestamp.return_value = 1700000000
+    photo = MagicMock()
+    photo.file_id = f"fid-{file_unique_id}"
+    photo.file_unique_id = file_unique_id
+    photo.file_size = file_size
+    m.photo = [photo]
+    return m
+
+
+def _setup_db(tmp_path):
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=42)
+    advance_setup_step(conn, 42, "done")
+    update_owner_field(conn, 42, "inbox_chat_id", -1001234)
+    return conn
 
 
 @pytest.mark.asyncio
@@ -177,3 +211,58 @@ def test_kind_image_when_caption_short():
 def test_kind_image_when_no_caption():
     assert media_group._album_kind(None) == "image"
     assert media_group._album_kind("") == "image"
+
+
+@pytest.mark.asyncio
+async def test_flush_album_creates_one_note_with_n_attachments(tmp_path, monkeypatch):
+    """Three photos with a caption land as one note (kind=post) with three
+    rows in the attachments table."""
+    conn = _setup_db(tmp_path)
+
+    settings = MagicMock(owner_telegram_id=42)
+    ctx = MagicMock()
+    ctx.application.bot_data = {"settings": settings, "conn": conn}
+    ctx.bot.set_message_reaction = AsyncMock()
+
+    fake_file = AsyncMock()
+    fake_file.download_to_drive = AsyncMock()
+    ctx.bot.get_file = AsyncMock(return_value=fake_file)
+
+    monkeypatch.setattr(
+        "src.bot.handlers.media_group.PHOTO_DIR_ROOT", tmp_path / "attachments",
+    )
+    monkeypatch.setattr(
+        "src.bot.handlers.media_group.extract_ocr",
+        lambda _path: "screenshot text " * 5,
+    )
+    monkeypatch.setattr(
+        "src.bot.handlers.media_group.JinaClient",
+        lambda api_key: MagicMock(embed=AsyncMock(return_value=[0.0] * 1024)),
+    )
+    update_owner_field(conn, 42, "jina_api_key", "fake")
+    update_owner_field(conn, 42, "deepgram_api_key", "fake")
+
+    long_caption = "Подборка статей про RAG-системы и эмбеддинги"
+    msgs = [
+        _make_album_msg(chat_id=-1001234, msg_id=200, mgid="g1",
+                         file_unique_id="u1", caption=long_caption),
+        _make_album_msg(chat_id=-1001234, msg_id=201, mgid="g1",
+                         file_unique_id="u2"),
+        _make_album_msg(chat_id=-1001234, msg_id=202, mgid="g1",
+                         file_unique_id="u3"),
+    ]
+
+    await media_group.flush_album(msgs, ctx)
+
+    rows = conn.execute("SELECT id, kind, content FROM notes").fetchall()
+    assert len(rows) == 1
+    note_id, kind, content = rows[0]
+    assert kind == "post"
+    assert content.startswith(long_caption)
+    assert "screenshot text" in content
+
+    attachments = list_attachments(conn, note_id)
+    assert len(attachments) == 3
+    assert {a.original_name for a in attachments} == {
+        "photo_u1.jpg", "photo_u2.jpg", "photo_u3.jpg",
+    }
