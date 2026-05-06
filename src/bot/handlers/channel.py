@@ -118,7 +118,7 @@ async def _maybe_pair_with_previous(ctx, conn, owner, msg, note_id: int) -> None
     prev = _recent_solo.get(chat_id)
     pair_eligible = (
         prev is not None
-        and (this_ts - prev.date_ts) <= _PAIR_WINDOW_SEC
+        and abs(this_ts - prev.date_ts) <= _PAIR_WINDOW_SEC
         and prev.is_forward != this_is_forward
     )
     if pair_eligible:
