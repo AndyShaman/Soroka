@@ -160,24 +160,15 @@ def _truncate_smart(text: str, limit: int = 200) -> str:
 
 
 def format_hit(note) -> str:
-    """Render one search-result card. Public entry point used by both
-    `search.py` and `search_callbacks.py`."""
+    """Render one search-result card.
+
+    Format: kind tag, link, full text body. Title/snippet duplication is
+    no longer a concern because we drop the title row entirely — the user
+    judges relevance from the body itself, not from a derived heading.
+
+    Per-card body is capped so five cards comfortably fit Telegram's
+    4096-char message limit (5 × 700 + separators ≈ 3.6 KB)."""
     link = message_link(note.tg_chat_id, note.tg_message_id)
-
-    title = _clean_title(note.title)
-    content = note.content or ""
-
-    # Fix #3 — fallback to a synthetic title from content when the real
-    # title is missing/junk.
-    if not title and content:
-        title = _first_meaningful_line(content)
-
-    snippet_full = _clean_snippet(content)
-    # Fix #1 — drop the title prefix from the snippet if it duplicates.
-    if title:
-        snippet_full = _strip_title_prefix(snippet_full, title)
-    snippet = _truncate_smart(snippet_full, limit=200)
-
-    label = title or "(без подписи)"
-    header = f"📌 [{note.kind}] {label}"
-    return f"{header}\n{link}\n{snippet}" if snippet else f"{header}\n{link}"
+    body = _truncate_smart(_clean_snippet(note.content or ""), limit=700)
+    header = f"📌 [{note.kind}]"
+    return f"{header}\n{link}\n{body}" if body else f"{header}\n{link}"

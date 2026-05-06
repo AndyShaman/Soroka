@@ -421,3 +421,36 @@ async def test_channel_handler_pair_only_uses_immediate_predecessor(tmp_path):
         kw = reindexed.await_args.kwargs
         assert kw["note_a_id"] == 2
         assert kw["note_b_id"] == 3
+
+
+@pytest.mark.asyncio
+async def test_channel_handler_pairs_when_second_message_has_earlier_ts(tmp_path):
+    """Telegram occasionally hands us a later message_id with an *earlier*
+    `date` than the previous one (server clock skew, edits, retransmits).
+    The 2-second window must compare absolute deltas — without abs() the
+    pair is silently dropped because (this_ts - prev.date_ts) is negative
+    and stays ≤ 2.0, but `prev.is_forward != this_is_forward` still holds,
+    so we'd be relying on the comparison alone. abs() is the explicit
+    guarantee that order doesn't matter."""
+    conn = _setup_owner(tmp_path)
+    ctx = _make_ctx(conn)
+
+    # u1 arrives first (handler order) but has a LATER timestamp than u2.
+    u1 = _make_update(chat_id=-1001234, text="comment", message_id=100,
+                      date_ts=1_700_000_005)
+    u2 = _make_update(chat_id=-1001234, text="fwd body", message_id=101,
+                      forward_chat_id=-100999, date_ts=1_700_000_004)
+
+    with patch(
+        "src.bot.handlers.channel._route_and_ingest",
+        new=AsyncMock(side_effect=[50, 51]),
+    ), patch(
+        "src.bot.handlers.channel.sibling_index.reindex_pair",
+        new=AsyncMock(),
+    ) as reindexed:
+        await channel_handler(u1, ctx)
+        await channel_handler(u2, ctx)
+        reindexed.assert_awaited_once()
+        kw = reindexed.await_args.kwargs
+        assert kw["note_a_id"] == 50
+        assert kw["note_b_id"] == 51

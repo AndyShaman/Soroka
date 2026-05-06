@@ -10,7 +10,7 @@ from src.core.notes import (
 )
 from src.core.vec import upsert_embedding
 from src.core.attachments import insert_attachment
-from src.adapters.extractors.web import extract_web
+from src.adapters.extractors.web import extract_web, find_first_url
 from src.adapters.extractors.pdf import extract_pdf
 from src.adapters.extractors.docx import extract_docx
 from src.adapters.extractors.xlsx import extract_xlsx
@@ -80,15 +80,17 @@ async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
     source_url: Optional[str] = None
 
     if kind == "web":
-        title, body = extract_web(raw)
-        source_url = raw
-        body = body or raw
+        url = find_first_url(raw) or raw
+        title, extracted = extract_web(url)
+        source_url = url
+        body = _merge_user_text_with_extract(raw, url, extracted)
         is_thin = _is_thin(body)
     elif kind == "youtube":
         from src.adapters.extractors.youtube import extract_youtube
-        title, body = extract_youtube(raw)
-        source_url = raw
-        body = body or raw
+        url = find_first_url(raw) or raw
+        title, extracted = extract_youtube(url)
+        source_url = url
+        body = _merge_user_text_with_extract(raw, url, extracted)
         is_thin = _is_thin(body)
     else:
         title = _make_title(raw)
@@ -107,6 +109,26 @@ async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
 def _make_title(text: str) -> str:
     first_line = text.strip().splitlines()[0]
     return first_line[:80]
+
+
+def _merge_user_text_with_extract(raw: str, url: str, extracted: str) -> str:
+    """Combine the user's wrap-around text with the extractor body.
+
+    Bare URL ("https://..."): keeps prior behaviour — body is the extracted
+    article (or the URL itself if extraction came back empty).
+
+    Wrapped URL ("Пробовали https://...?"): we want both signals in
+    `content`. The user's note tells search what *they* think the link
+    is about; the extracted article gives keywords from the linked page.
+    Joining them lets either side surface the note in BM25/dense search.
+    """
+    raw_stripped = raw.strip()
+    extracted = (extracted or "").strip()
+    if raw_stripped == url:
+        return extracted or url
+    if not extracted:
+        return raw_stripped
+    return f"{raw_stripped}\n\n{extracted}"
 
 
 async def ingest_voice(conn: sqlite3.Connection, *, deepgram, jina,

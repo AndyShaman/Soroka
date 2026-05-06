@@ -108,6 +108,77 @@ async def test_ingest_url_uses_web_extractor(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ingest_short_text_with_url_extracts_link(tmp_path, monkeypatch):
+    """Short note ("Пробовали <url> ?") — the URL is embedded but the
+    message is link-card-shaped. Extractor receives just the URL (not the
+    surrounding words) and the saved content keeps both the user's text
+    and the extracted body so search hits via either side."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    captured_urls: list[str] = []
+
+    def fake_extract(url):
+        captured_urls.append(url)
+        return ("gstack", "gstack — agentic dev workflow CLI")
+
+    monkeypatch.setattr("src.core.ingest.extract_web", fake_extract)
+
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    note_id = await ingest_text(
+        conn, jina=fake_jina, owner_id=1,
+        tg_chat_id=-1, tg_message_id=2,
+        text="Пробовали https://github.com/garrytan/gstack ?",
+        caption=None, created_at=1,
+    )
+    n = get_note(conn, note_id)
+    assert n.kind == "web"
+    assert n.title == "gstack"
+    assert n.source_url == "https://github.com/garrytan/gstack"
+    # User's wrap text AND extracted body are both in content.
+    assert "Пробовали" in n.content
+    assert "gstack — agentic dev workflow CLI" in n.content
+    # Extractor was called with the bare URL, not the whole message.
+    assert captured_urls == ["https://github.com/garrytan/gstack"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_long_text_with_url_stays_text(tmp_path, monkeypatch):
+    """Long prose that mentions a URL should NOT trigger extraction —
+    `extract_web` must not be called and `kind` stays 'text'."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    extracted_calls: list[str] = []
+    monkeypatch.setattr(
+        "src.core.ingest.extract_web",
+        lambda url: extracted_calls.append(url) or ("T", "B"),
+    )
+
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    text = (
+        "один два три четыре пять шесть семь восемь девять десять "
+        "https://example.com/x"
+    )
+    note_id = await ingest_text(
+        conn, jina=fake_jina, owner_id=1,
+        tg_chat_id=-1, tg_message_id=3,
+        text=text, caption=None, created_at=1,
+    )
+    n = get_note(conn, note_id)
+    assert n.kind == "text"
+    assert n.source_url is None
+    assert n.content == text
+    assert extracted_calls == []
+
+
+@pytest.mark.asyncio
 async def test_ingest_voice_transcribes_and_stores(tmp_path):
     conn = open_db(str(tmp_path / "x.db"))
     init_schema(conn)
