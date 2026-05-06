@@ -2,6 +2,8 @@ from src.bot.handlers._search_format import (
     _clean_title,
     _clean_snippet,
     _truncate_smart,
+    _format_source_url,
+    _SOURCE_URL_MAX,
     format_hit,
 )
 from src.core.models import Note
@@ -169,7 +171,7 @@ def test_format_hit_keeps_in_text_emoji():
 
 def test_format_hit_renders_ru_summary_between_link_and_body():
     """Foreign-language URL captures get a Russian summary row inserted
-    between the link and the article body."""
+    after the source-url row and before the article body."""
     note = Note(
         id=6, owner_id=1, tg_chat_id=-1001, tg_message_id=40,
         kind="web", title="Some English title",
@@ -182,8 +184,9 @@ def test_format_hit_renders_ru_summary_between_link_and_body():
     lines = out.splitlines()
     assert lines[0] == "📌 [web]"
     assert lines[1] == "https://t.me/c/1/40"
-    assert lines[2] == "🇷🇺 Статья про большие языковые модели."
-    assert lines[3] == "This is the English article body about LLMs."
+    assert lines[2] == "https://example.com/x"
+    assert lines[3] == "🇷🇺 Статья про большие языковые модели."
+    assert lines[4] == "This is the English article body about LLMs."
 
 
 def test_format_hit_omits_ru_summary_row_when_absent():
@@ -208,3 +211,97 @@ def test_format_hit_omits_ru_summary_row_when_blank():
     )
     out = format_hit(note)
     assert "🇷🇺" not in out
+
+
+# ---------- _format_source_url --------------------------------------------
+
+def test_format_source_url_returns_empty_for_none_or_blank():
+    """Notes without an external URL produce no source-url row."""
+    assert _format_source_url(None, "https://t.me/c/1/1") == ""
+    assert _format_source_url("", "https://t.me/c/1/1") == ""
+    assert _format_source_url("   ", "https://t.me/c/1/1") == ""
+
+
+def test_format_source_url_skips_when_equals_message_link():
+    """If source_url is the Telegram message link itself (already shown
+    as line 2), don't echo it again."""
+    link = "https://t.me/c/1001/55"
+    assert _format_source_url(link, link) == ""
+
+
+def test_format_source_url_returns_url_verbatim_when_short():
+    out = _format_source_url("https://github.com/foo/bar", "https://t.me/c/1/1")
+    assert out == "https://github.com/foo/bar"
+
+
+def test_format_source_url_truncates_pathological_query():
+    """A URL longer than _SOURCE_URL_MAX is hard-clipped with an ellipsis
+    so a long ?utm_… tail can't blow the per-card budget."""
+    long_url = "https://example.com/path?" + "x=1&" * 80  # >>110 chars
+    out = _format_source_url(long_url, "https://t.me/c/1/1")
+    assert len(out) <= _SOURCE_URL_MAX
+    assert out.endswith("…")
+    assert out.startswith("https://example.com/path")
+
+
+# ---------- format_hit + source_url row -----------------------------------
+
+def test_format_hit_inserts_source_url_between_link_and_summary():
+    """Order is: header, telegram link, source_url, ru_summary, body."""
+    note = Note(
+        id=10, owner_id=1, tg_chat_id=-1001, tg_message_id=50,
+        kind="web", title="GitHub repo", content="English article body.",
+        source_url="https://github.com/foo/bar",
+        ru_summary="Описание репозитория.",
+        created_at=1,
+    )
+    lines = format_hit(note).splitlines()
+    assert lines[0] == "📌 [web]"
+    assert lines[1] == "https://t.me/c/1/50"
+    assert lines[2] == "https://github.com/foo/bar"
+    assert lines[3] == "🇷🇺 Описание репозитория."
+    assert lines[4] == "English article body."
+
+
+def test_format_hit_source_url_row_without_summary():
+    """Russian-language URL captures still get a source_url row even
+    though there's no ru_summary."""
+    note = Note(
+        id=11, owner_id=1, tg_chat_id=-1001, tg_message_id=51,
+        kind="web", title=None, content="Текст статьи на русском.",
+        source_url="https://habr.com/ru/articles/12345/",
+        created_at=1,
+    )
+    lines = format_hit(note).splitlines()
+    assert lines == [
+        "📌 [web]",
+        "https://t.me/c/1/51",
+        "https://habr.com/ru/articles/12345/",
+        "Текст статьи на русском.",
+    ]
+
+
+def test_format_hit_omits_source_url_when_equals_message_link():
+    """Defensive: if source_url somehow coincides with the message link,
+    we don't print the same URL twice."""
+    note = Note(
+        id=12, owner_id=1, tg_chat_id=-1001, tg_message_id=52,
+        kind="web", title=None, content="body",
+        source_url="https://t.me/c/1/52",
+        created_at=1,
+    )
+    out = format_hit(note)
+    # The telegram link appears exactly once as line 2; no second copy.
+    assert out.count("https://t.me/c/1/52") == 1
+
+
+def test_format_hit_no_source_url_row_when_field_missing():
+    """Notes without source_url keep the original 3-line shape."""
+    note = Note(
+        id=13, owner_id=1, tg_chat_id=-1001, tg_message_id=53,
+        kind="text", title=None, content="Просто текст.",
+        created_at=1,
+    )
+    lines = format_hit(note).splitlines()
+    assert len(lines) == 3
+    assert lines == ["📌 [text]", "https://t.me/c/1/53", "Просто текст."]

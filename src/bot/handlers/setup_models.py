@@ -7,18 +7,30 @@ from src.core.owners import get_owner, update_owner_field, advance_setup_step
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/models"
 
+# Defaults pre-filled at the "models" wizard step so a brand-new owner can
+# advance with one tap. Both are non-reasoning (or hybrid-controllable via
+# `reasoning.enabled=false`, which OpenRouterClient passes for every call):
+# reasoning models silently consume `max_tokens` on hidden reasoning and
+# return empty `content`, breaking ru_summary, rerank and intent-parse.
+DEFAULT_PRIMARY = "z-ai/glm-4.5-air:free"
+DEFAULT_FALLBACK = "google/gemma-4-31b-it:free"
+
+# Free-tier picks restricted to non-reasoning / hybrid-controllable models.
+# Reasoning-by-default IDs (nvidia nemotron-reasoning, gpt-oss without
+# effort, DeepSeek R1, …) intentionally absent — they will not return
+# usable summaries even with `reasoning.enabled=false`, since OpenRouter
+# does not guarantee that flag is honoured by every provider.
 RECOMMENDED_FREE = [
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "z-ai/glm-4.5-air:free",
+    DEFAULT_PRIMARY,
+    DEFAULT_FALLBACK,
+    "google/gemma-4-26b-a4b-it:free",
     "qwen/qwen3-next-80b-a3b-instruct:free",
-    "qwen/qwen3-coder:free",
-    "minimax/minimax-m2.5:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "inclusionai/ling-2.6-1t:free",
 ]
 
 RECOMMENDED_PAID = [
-    "openai/gpt-5-nano",
     "google/gemini-2.5-flash-lite",
-    "openai/gpt-5-mini",
     "google/gemini-3.1-flash-lite-preview",
     "google/gemini-3-flash-preview",
 ]
@@ -65,12 +77,38 @@ async def _send_role_picker(reply_target, ctx: ContextTypes.DEFAULT_TYPE, role: 
     )
 
 
+def _defaults_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✓ Использовать", callback_data="defaults:use"),
+        InlineKeyboardButton("✏️ Изменить", callback_data="defaults:change"),
+    ]])
+
+
+def _defaults_prompt() -> str:
+    return (
+        "Рекомендую такие модели — обе бесплатные, проверены на этом боте:\n\n"
+        f"🟢 primary:  `{DEFAULT_PRIMARY}`\n"
+        f"🔵 fallback: `{DEFAULT_FALLBACK}`\n\n"
+        "Можно использовать как есть или выбрать другие."
+    )
+
+
 @owner_only
 async def models_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     settings = ctx.application.bot_data["settings"]
     conn = ctx.application.bot_data["conn"]
     owner = get_owner(conn, settings.owner_telegram_id)
     if not owner:
+        return
+    # During the initial wizard offer the recommended pair as a one-tap
+    # accept; post-setup /models always opens the manual picker so re-edits
+    # don't get blocked behind the dialog.
+    if owner.setup_step == "models" and not owner.primary_model:
+        await update.message.reply_text(
+            _defaults_prompt(),
+            reply_markup=_defaults_keyboard(),
+            parse_mode="Markdown",
+        )
         return
     role = "primary" if not owner.primary_model else "fallback"
     await _send_role_picker(update.message, ctx, role)
@@ -88,6 +126,37 @@ async def _save_and_advance(conn, ctx: ContextTypes.DEFAULT_TYPE, owner_id: int,
         advance_setup_step(conn, owner_id, "github")
         from src.bot.handlers.setup import PROMPTS
         await reply_target.reply_text(PROMPTS["github"], parse_mode="Markdown")
+
+
+@owner_only
+async def defaults_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    settings = ctx.application.bot_data["settings"]
+    conn = ctx.application.bot_data["conn"]
+    owner = get_owner(conn, settings.owner_telegram_id)
+    if not owner:
+        return
+
+    if query.data == "defaults:use":
+        # Persist only after the user confirms — abandoned dialogs leave the
+        # wizard in a re-runnable state instead of half-saving defaults.
+        update_owner_field(conn, owner.telegram_id, "primary_model", DEFAULT_PRIMARY)
+        update_owner_field(conn, owner.telegram_id, "fallback_model", DEFAULT_FALLBACK)
+        await query.edit_message_text(
+            f"✓ primary: {DEFAULT_PRIMARY}\n✓ fallback: {DEFAULT_FALLBACK}"
+        )
+        owner = get_owner(conn, owner.telegram_id)
+        if owner.setup_step == "models":
+            advance_setup_step(conn, owner.telegram_id, "github")
+            from src.bot.handlers.setup import PROMPTS
+            await query.message.reply_text(PROMPTS["github"], parse_mode="Markdown")
+        return
+
+    if query.data == "defaults:change":
+        await query.edit_message_text("Выбери свои модели:")
+        await _send_role_picker(query.message, ctx, "primary")
+        return
 
 
 @owner_only
@@ -169,4 +238,5 @@ async def handle_custom_model_text(ctx: ContextTypes.DEFAULT_TYPE, text: str, me
 
 def register_model_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("models", models_command))
+    app.add_handler(CallbackQueryHandler(defaults_callback, pattern=r"^defaults:"))
     app.add_handler(CallbackQueryHandler(model_callback, pattern=r"^(pick|page|custom):"))

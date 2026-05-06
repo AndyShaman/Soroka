@@ -160,31 +160,57 @@ def _truncate_smart(text: str, limit: int = 200) -> str:
 
 
 # Per-card body cap, chosen so 5 cards fit Telegram's 4096-char limit
-# with comfortable margin (5 × 700 + separators ≈ 3.6 KB).
-_BODY_CAP_DEFAULT = 700
-# When a Russian summary row is present (≤200 chars), trim the body to
-# preserve the same total per-card budget. 700 - 200 = 500.
-_BODY_CAP_WITH_SUMMARY = 500
+# with comfortable margin. Source-url row eats ~80-110 chars of header
+# space, so the default body cap dropped from 700 → 620 to stay within
+# the same total per-card envelope (5 × 620 + separators ≈ 3.2 KB).
+_BODY_CAP_DEFAULT = 620
+# With a Russian summary (≤200 chars) AND a source-url row, the body
+# shrinks further: 620 - 200 = 420.
+_BODY_CAP_WITH_SUMMARY = 420
+# Hard cap on the source_url row so a pathological URL with a long
+# query string can't blow the per-card budget.
+_SOURCE_URL_MAX = 110
+
+
+def _format_source_url(raw: str | None, message_link_url: str) -> str:
+    """Return the row to render for the note's external URL, or empty.
+
+    Skipped when the note has no source_url, when it equals the Telegram
+    message link (already shown), or when it is just a `tg://` deep link.
+    Long URLs are hard-clipped at `_SOURCE_URL_MAX` so a pathological
+    query string can't break the per-card budget.
+    """
+    url = (raw or "").strip()
+    if not url or url == message_link_url:
+        return ""
+    if len(url) > _SOURCE_URL_MAX:
+        url = url[:_SOURCE_URL_MAX - 1].rstrip() + "…"
+    return url
 
 
 def format_hit(note) -> str:
     """Render one search-result card.
 
-    Format: kind tag, link, optional Russian summary (for foreign-language
-    URL captures), full text body. Title/snippet duplication is no longer
-    a concern because we drop the title row entirely — the user judges
-    relevance from the body itself, not from a derived heading.
+    Format: kind tag, Telegram link, optional source URL (when the post
+    pointed to an external page), optional Russian summary (for foreign-
+    language URL captures), full text body. The source URL row helps the
+    reader recognise where a captured link points without scrolling
+    through the body — important when the body is the extracted article
+    text and never repeats the URL itself.
 
     Per-card body is capped so five cards comfortably fit Telegram's
     4096-char message limit. The cap shrinks when a summary row eats
     into that budget."""
     link = message_link(note.tg_chat_id, note.tg_message_id)
     header = f"📌 [{note.kind}]"
+    source_url_row = _format_source_url(getattr(note, "source_url", None), link)
     ru_summary = (getattr(note, "ru_summary", None) or "").strip()
     body_cap = _BODY_CAP_WITH_SUMMARY if ru_summary else _BODY_CAP_DEFAULT
     body = _truncate_smart(_clean_snippet(note.content or ""), limit=body_cap)
 
     parts = [header, link]
+    if source_url_row:
+        parts.append(source_url_row)
     if ru_summary:
         parts.append(f"🇷🇺 {ru_summary}")
     if body:
