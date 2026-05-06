@@ -24,3 +24,5 @@ keys.txt
 premortem-report-*.html
 premortem-transcript-*.md
 how_to.md
+
+docs/superpowers/handoff-*
