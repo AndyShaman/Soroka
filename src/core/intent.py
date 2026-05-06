@@ -29,6 +29,7 @@ async def parse_intent(openrouter, primary: str, fallback: Optional[str],
             primary=primary, fallback=fallback,
             messages=[{"role": "user", "content": PROMPT + query}],
             max_tokens=200,
+            extra_body={"reasoning": {"enabled": False}},
         )
         data = parse_loose_json(raw)
         clean = data.get("clean_query", query) or query

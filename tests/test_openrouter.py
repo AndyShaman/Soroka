@@ -1,6 +1,8 @@
 # tests/test_openrouter.py
 import pytest
-from src.adapters.openrouter import OpenRouterClient, ModelInfo
+from src.adapters.openrouter import (
+    OpenRouterClient, ModelInfo, OpenRouterError, EmptyContentError,
+)
 
 @pytest.mark.asyncio
 async def test_validate_key_success(httpx_mock):
@@ -57,9 +59,6 @@ async def test_complete_falls_back_on_primary_error(httpx_mock):
     assert out == "ok"
 
 
-from src.adapters.openrouter import OpenRouterError
-
-
 @pytest.mark.asyncio
 async def test_validate_key_unauthorized(httpx_mock):
     httpx_mock.add_response(
@@ -99,3 +98,73 @@ async def test_complete_no_fallback_raises(httpx_mock):
             messages=[{"role": "user", "content": "hi"}],
         )
     assert exc.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_complete_forwards_extra_body(httpx_mock):
+    """extra_body keys (e.g. `reasoning`) must be merged into the request."""
+    httpx_mock.add_response(
+        url="https://openrouter.ai/api/v1/chat/completions",
+        match_json={
+            "model": "primary/x",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1000,
+            "reasoning": {"enabled": False},
+        },
+        json={"choices": [{"message": {"content": "ok"}}]},
+    )
+    c = OpenRouterClient(api_key="k")
+    out = await c.complete(
+        primary="primary/x", fallback=None,
+        messages=[{"role": "user", "content": "hi"}],
+        extra_body={"reasoning": {"enabled": False}},
+    )
+    assert out == "ok"
+
+
+@pytest.mark.asyncio
+async def test_complete_rejects_extra_body_overriding_reserved_keys():
+    c = OpenRouterClient(api_key="k")
+    with pytest.raises(ValueError) as exc:
+        await c.complete(
+            primary="primary/x", fallback=None,
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"model": "evil/y"},
+        )
+    assert "model" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_complete_falls_back_on_empty_content(httpx_mock):
+    """Reasoning models can return 200 OK with empty content; fallback fires."""
+    httpx_mock.add_response(
+        url="https://openrouter.ai/api/v1/chat/completions",
+        match_json={"model": "primary/x", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1000},
+        json={"choices": [{"message": {"content": ""}}]},
+    )
+    httpx_mock.add_response(
+        url="https://openrouter.ai/api/v1/chat/completions",
+        match_json={"model": "fallback/y", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1000},
+        json={"choices": [{"message": {"content": "ok"}}]},
+    )
+    c = OpenRouterClient(api_key="k")
+    out = await c.complete(
+        primary="primary/x", fallback="fallback/y",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert out == "ok"
+
+
+@pytest.mark.asyncio
+async def test_complete_raises_empty_content_when_no_fallback(httpx_mock):
+    httpx_mock.add_response(
+        url="https://openrouter.ai/api/v1/chat/completions",
+        match_json={"model": "primary/x", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1000},
+        json={"choices": [{"message": {"content": None}}]},
+    )
+    c = OpenRouterClient(api_key="k")
+    with pytest.raises(EmptyContentError):
+        await c.complete(
+            primary="primary/x", fallback=None,
+            messages=[{"role": "user", "content": "hi"}],
+        )

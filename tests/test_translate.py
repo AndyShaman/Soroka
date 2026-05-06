@@ -127,3 +127,15 @@ async def test_summarize_ru_passes_primary_and_fallback_to_openrouter():
     kwargs = fake.complete.call_args.kwargs
     assert kwargs["primary"] == "m1"
     assert kwargs["fallback"] == "m2"
+
+
+@pytest.mark.asyncio
+async def test_summarize_ru_disables_reasoning_via_extra_body():
+    """Reasoning-only models silently consume max_tokens on hidden reasoning,
+    leaving content empty. Always pass reasoning.enabled=false so hybrid
+    models stay fast and pure non-reasoning models ignore the field."""
+    fake = AsyncMock()
+    fake.complete = AsyncMock(return_value="ok")
+    await summarize_ru(fake, primary="m1", fallback="m2", text="body")
+    kwargs = fake.complete.call_args.kwargs
+    assert kwargs["extra_body"] == {"reasoning": {"enabled": False}}

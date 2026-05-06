@@ -119,7 +119,7 @@ async def test_rerank_prompt_includes_ru_summary_when_present():
 
     captured: dict = {}
 
-    async def fake_complete(*, primary, fallback, messages, max_tokens):
+    async def fake_complete(*, primary, fallback, messages, max_tokens, **_):
         captured["content"] = messages[0]["content"]
         return "[10]"
 
@@ -151,7 +151,7 @@ async def test_rerank_prompt_omits_ru_marker_when_summary_absent():
 
     captured: dict = {}
 
-    async def fake_complete(*, primary, fallback, messages, max_tokens):
+    async def fake_complete(*, primary, fallback, messages, max_tokens, **_):
         captured["content"] = messages[0]["content"]
         return "[11]"
 
@@ -162,6 +162,21 @@ async def test_rerank_prompt_omits_ru_marker_when_summary_absent():
                   query="что-то", candidates=candidates, top_k=5)
 
     assert "[ru-кратко]" not in captured["content"]
+
+
+@pytest.mark.asyncio
+async def test_rerank_disables_reasoning_via_extra_body():
+    from src.core.models import Note
+    from src.core.search import rerank
+
+    fake_or = AsyncMock()
+    fake_or.complete = AsyncMock(return_value="[1]")
+    candidates = [Note(id=1, owner_id=1, tg_chat_id=-1, tg_message_id=1,
+                       kind="text", content="x", created_at=1)]
+    await rerank(fake_or, primary="x", fallback="y",
+                  query="q", candidates=candidates, top_k=1)
+    kwargs = fake_or.complete.call_args.kwargs
+    assert kwargs["extra_body"] == {"reasoning": {"enabled": False}}
 
 
 # ---------------------------------------------------------------------------

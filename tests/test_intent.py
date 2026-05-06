@@ -20,3 +20,12 @@ async def test_parse_intent_extracts_kind_filter():
                               query="голосовуха про пасту")
     assert out.clean_query == "паста рецепт"
     assert out.kind == "voice"
+
+
+@pytest.mark.asyncio
+async def test_parse_intent_disables_reasoning():
+    fake = AsyncMock()
+    fake.complete = AsyncMock(return_value='{"clean_query": "паста", "kind": null}')
+    await parse_intent(fake, primary="x", fallback="y", query="паста")
+    kwargs = fake.complete.call_args.kwargs
+    assert kwargs["extra_body"] == {"reasoning": {"enabled": False}}

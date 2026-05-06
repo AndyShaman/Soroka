@@ -239,6 +239,7 @@ async def rerank(openrouter, primary: str, fallback: Optional[str],
                 query=query, candidates=blocks, top_k=top_k,
             )}],
             max_tokens=200,
+            extra_body={"reasoning": {"enabled": False}},
         )
         ids = parse_loose_json(raw)
         if not isinstance(ids, list):

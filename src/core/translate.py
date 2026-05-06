@@ -76,10 +76,14 @@ async def summarize_ru(openrouter, primary: str, fallback: Optional[str],
 
     sample = text[:_PROMPT_BODY_CHARS]
     try:
+        # `reasoning.enabled=false` keeps hybrid models (GLM-4.5, qwen-thinking,
+        # gpt-oss-with-effort) from spending the output budget on hidden
+        # reasoning tokens. Pure non-reasoning models ignore the field.
         raw = await openrouter.complete(
             primary=primary, fallback=fallback,
             messages=[{"role": "user", "content": _SUMMARY_PROMPT + sample}],
             max_tokens=120,
+            extra_body={"reasoning": {"enabled": False}},
         )
     except Exception as e:
         logger.warning("ru_summary failed (%s); skipping", e)
