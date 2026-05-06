@@ -41,6 +41,7 @@ class Note(BaseModel):
     created_at: int
     thin_content: bool = False
     deleted_at: Optional[int] = None
+    ru_summary: Optional[str] = None
 
 
 class Attachment(BaseModel):

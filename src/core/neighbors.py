@@ -14,11 +14,13 @@ MAX_BATCH_IDS = 100
 
 _SELECT_NOTE_COLUMNS = (
     "id, owner_id, tg_message_id, tg_chat_id, kind, title, content, "
-    "source_url, raw_caption, created_at, COALESCE(thin_content, 0), deleted_at"
+    "source_url, raw_caption, created_at, COALESCE(thin_content, 0), "
+    "deleted_at, ru_summary"
 )
 _NOTE_FIELDS = (
     "id owner_id tg_message_id tg_chat_id kind title content "
-    "source_url raw_caption created_at thin_content deleted_at"
+    "source_url raw_caption created_at thin_content deleted_at "
+    "ru_summary"
 ).split()
 
 

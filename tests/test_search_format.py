@@ -165,3 +165,46 @@ def test_format_hit_keeps_in_text_emoji():
     )
     out = format_hit(note)
     assert "🔵" in out
+
+
+def test_format_hit_renders_ru_summary_between_link_and_body():
+    """Foreign-language URL captures get a Russian summary row inserted
+    between the link and the article body."""
+    note = Note(
+        id=6, owner_id=1, tg_chat_id=-1001, tg_message_id=40,
+        kind="web", title="Some English title",
+        content="This is the English article body about LLMs.",
+        source_url="https://example.com/x",
+        created_at=1,
+        ru_summary="Статья про большие языковые модели.",
+    )
+    out = format_hit(note)
+    lines = out.splitlines()
+    assert lines[0] == "📌 [web]"
+    assert lines[1] == "https://t.me/c/1/40"
+    assert lines[2] == "🇷🇺 Статья про большие языковые модели."
+    assert lines[3] == "This is the English article body about LLMs."
+
+
+def test_format_hit_omits_ru_summary_row_when_absent():
+    """Notes without ru_summary keep the original 3-line shape."""
+    note = Note(
+        id=7, owner_id=1, tg_chat_id=-1001, tg_message_id=41,
+        kind="text", title=None, content="Обычная заметка.",
+        created_at=1,
+    )
+    out = format_hit(note)
+    lines = out.splitlines()
+    assert "🇷🇺" not in out
+    assert len(lines) == 3
+
+
+def test_format_hit_omits_ru_summary_row_when_blank():
+    """Whitespace-only ru_summary is treated as empty — no row emitted."""
+    note = Note(
+        id=8, owner_id=1, tg_chat_id=-1001, tg_message_id=42,
+        kind="web", title=None, content="body",
+        created_at=1, ru_summary="   ",
+    )
+    out = format_hit(note)
+    assert "🇷🇺" not in out

@@ -30,6 +30,7 @@ def _note_to_dict(n) -> dict:
         "title": n.title,
         "content": n.content,
         "source_url": n.source_url,
+        "ru_summary": getattr(n, "ru_summary", None),
         "tg_message_id": n.tg_message_id,
         "tg_chat_id": n.tg_chat_id,
         "tg_link": message_link(n.tg_chat_id, n.tg_message_id),
@@ -96,6 +97,7 @@ async def tool_search(conn: sqlite3.Connection, owner_id: int,
     return [{
         "id": n.id, "kind": n.kind, "title": n.title,
         "content": n.content, "source_url": n.source_url,
+        "ru_summary": getattr(n, "ru_summary", None),
         "tg_link": message_link(n.tg_chat_id, n.tg_message_id),
         "created_at": n.created_at,
     } for n in reranked]

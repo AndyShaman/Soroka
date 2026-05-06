@@ -100,6 +100,70 @@ async def test_rerank_orders_by_llm_response(tmp_path):
     assert [n.id for n in reranked] == [3, 1]
 
 
+@pytest.mark.asyncio
+async def test_rerank_prompt_includes_ru_summary_when_present():
+    """Foreign-language candidates with ru_summary must surface that
+    summary in the rerank prompt — otherwise the model can't match a
+    Russian query against EN content surfaced via the dense index."""
+    from src.core.models import Note
+    from src.core.search import rerank
+
+    candidates = [
+        Note(
+            id=10, owner_id=1, tg_chat_id=-1001, tg_message_id=1,
+            kind="web", title="English title",
+            content="English article body about LLMs.",
+            created_at=1, ru_summary="Статья про языковые модели.",
+        ),
+    ]
+
+    captured: dict = {}
+
+    async def fake_complete(*, primary, fallback, messages, max_tokens):
+        captured["content"] = messages[0]["content"]
+        return "[10]"
+
+    fake_or = AsyncMock()
+    fake_or.complete = fake_complete
+
+    await rerank(fake_or, primary="x", fallback="y",
+                  query="языковые модели", candidates=candidates, top_k=5)
+
+    assert "Статья про языковые модели." in captured["content"]
+    assert "[ru-кратко]" in captured["content"]
+
+
+@pytest.mark.asyncio
+async def test_rerank_prompt_omits_ru_marker_when_summary_absent():
+    """Notes without ru_summary still produce clean prompts (no empty
+    [ru-кратко] line)."""
+    from src.core.models import Note
+    from src.core.search import rerank
+
+    candidates = [
+        Note(
+            id=11, owner_id=1, tg_chat_id=-1001, tg_message_id=1,
+            kind="text", title="Заметка",
+            content="Обычный русский текст.",
+            created_at=1,
+        ),
+    ]
+
+    captured: dict = {}
+
+    async def fake_complete(*, primary, fallback, messages, max_tokens):
+        captured["content"] = messages[0]["content"]
+        return "[11]"
+
+    fake_or = AsyncMock()
+    fake_or.complete = fake_complete
+
+    await rerank(fake_or, primary="x", fallback="y",
+                  query="что-то", candidates=candidates, top_k=5)
+
+    assert "[ru-кратко]" not in captured["content"]
+
+
 # ---------------------------------------------------------------------------
 # Tests for _normalize_url and _diversify_by_source
 # ---------------------------------------------------------------------------

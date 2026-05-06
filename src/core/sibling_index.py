@@ -44,24 +44,34 @@ async def reindex_pair(
     A Jina rate-limit shouldn't kill the FTS half — dense and BM25 are
     independent retrieval signals and either one alone still helps RRF
     surface the right notes."""
-    text_a = _read_content(conn, note_a_id)
-    text_b = _read_content(conn, note_b_id)
-    if text_a is None and text_b is None:
+    a = _read_note_text(conn, note_a_id)
+    b = _read_note_text(conn, note_b_id)
+    if a is None and b is None:
         return  # both vanished; nothing to do
 
-    text_a = text_a or ""
-    text_b = text_b or ""
+    text_a = (a[0] if a else "") or ""
+    text_b = (b[0] if b else "") or ""
+    sum_a = (a[1] if a else "") or ""
+    sum_b = (b[1] if b else "") or ""
+
     combined_a = f"{text_a}\n\n{text_b}".strip()
     combined_b = f"{text_b}\n\n{text_a}".strip()
 
+    # FTS stays content-only — ru_summary lives outside the BM25 index by
+    # design (no trigger covers it). The dense embedding gets both sides'
+    # summaries so RU queries can recover foreign-language paired notes.
     _reindex_fts(conn, note_a_id, combined_a)
     _reindex_fts(conn, note_b_id, combined_b)
 
-    for note_id, combined in ((note_a_id, combined_a), (note_b_id, combined_b)):
-        if not combined:
+    summaries = "\n\n".join(s for s in (sum_a, sum_b) if s)
+    embed_a = f"{combined_a}\n\n{summaries}".strip() if summaries else combined_a
+    embed_b = f"{combined_b}\n\n{summaries}".strip() if summaries else combined_b
+
+    for note_id, embed_text in ((note_a_id, embed_a), (note_b_id, embed_b)):
+        if not embed_text:
             continue
         try:
-            embedding = await jina.embed(combined[:8000], role="passage")
+            embedding = await jina.embed(embed_text[:8000], role="passage")
             upsert_embedding(conn, note_id, embedding)
         except Exception:
             logger.exception("sibling reindex: embed for note=%s failed", note_id)
@@ -69,11 +79,18 @@ async def reindex_pair(
     logger.info("sibling pair reindexed: a=%s b=%s", note_a_id, note_b_id)
 
 
-def _read_content(conn: sqlite3.Connection, note_id: int) -> str | None:
+def _read_note_text(conn: sqlite3.Connection, note_id: int) -> tuple[str, str] | None:
+    """Return (content, ru_summary) for a note, or None if it vanished.
+
+    ru_summary may be NULL in the DB; we surface it as an empty string
+    so callers can concat unconditionally.
+    """
     row = conn.execute(
-        "SELECT content FROM notes WHERE id = ?", (note_id,),
+        "SELECT content, ru_summary FROM notes WHERE id = ?", (note_id,),
     ).fetchone()
-    return row[0] if row else None
+    if row is None:
+        return None
+    return (row[0] or "", row[1] or "")
 
 
 def _reindex_fts(conn: sqlite3.Connection, note_id: int, combined: str) -> None:

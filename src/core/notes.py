@@ -19,11 +19,11 @@ def insert_note(conn: sqlite3.Connection, note: Note) -> Optional[int]:
     cur = conn.execute(
         """INSERT OR IGNORE INTO notes
            (owner_id, tg_message_id, tg_chat_id, kind, title, content,
-            source_url, raw_caption, created_at, thin_content)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            source_url, raw_caption, created_at, thin_content, ru_summary)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (note.owner_id, note.tg_message_id, note.tg_chat_id, note.kind,
          note.title, note.content, note.source_url, note.raw_caption,
-         note.created_at, 1 if note.thin_content else 0),
+         note.created_at, 1 if note.thin_content else 0, note.ru_summary),
     )
     conn.commit()
     if cur.rowcount == 0:
@@ -39,7 +39,7 @@ def get_note(conn: sqlite3.Connection, note_id: int) -> Optional[Note]:
     cur = conn.execute(
         """SELECT id, owner_id, tg_message_id, tg_chat_id, kind, title, content,
                   source_url, raw_caption, created_at,
-                  COALESCE(thin_content, 0), deleted_at
+                  COALESCE(thin_content, 0), deleted_at, ru_summary
            FROM notes WHERE id = ? AND deleted_at IS NULL""",
         (note_id,),
     )
@@ -47,7 +47,8 @@ def get_note(conn: sqlite3.Connection, note_id: int) -> Optional[Note]:
     if not row:
         return None
     fields = ("id owner_id tg_message_id tg_chat_id kind title content "
-              "source_url raw_caption created_at thin_content deleted_at").split()
+              "source_url raw_caption created_at thin_content deleted_at "
+              "ru_summary").split()
     data = dict(zip(fields, row))
     data["thin_content"] = bool(data["thin_content"])
     return Note(**data)
@@ -65,18 +66,36 @@ def find_note_id_by_message(conn: sqlite3.Connection, owner_id: int,
     return row[0] if row else None
 
 
+_UNSET = object()
+
+
 def update_note_content(conn: sqlite3.Connection, note_id: int, *,
                          kind: str, title: Optional[str], content: str,
-                         source_url: Optional[str], raw_caption: Optional[str]) -> None:
+                         source_url: Optional[str], raw_caption: Optional[str],
+                         ru_summary=_UNSET) -> None:
     """Overwrite a note's mutable fields. The notes_au trigger refreshes
     FTS automatically; the caller is responsible for re-embedding via
-    upsert_embedding."""
-    conn.execute(
-        """UPDATE notes
-           SET kind = ?, title = ?, content = ?, source_url = ?, raw_caption = ?
-           WHERE id = ?""",
-        (kind, title, content, source_url, raw_caption, note_id),
-    )
+    upsert_embedding.
+
+    `ru_summary` uses a sentinel default so callers that don't manage it
+    (e.g. older edit paths) leave the column untouched. Pass an explicit
+    value (including ``None``) to overwrite.
+    """
+    if ru_summary is _UNSET:
+        conn.execute(
+            """UPDATE notes
+               SET kind = ?, title = ?, content = ?, source_url = ?, raw_caption = ?
+               WHERE id = ?""",
+            (kind, title, content, source_url, raw_caption, note_id),
+        )
+    else:
+        conn.execute(
+            """UPDATE notes
+               SET kind = ?, title = ?, content = ?, source_url = ?,
+                   raw_caption = ?, ru_summary = ?
+               WHERE id = ?""",
+            (kind, title, content, source_url, raw_caption, ru_summary, note_id),
+        )
     conn.commit()
 
 
@@ -86,7 +105,7 @@ def list_recent_notes(conn: sqlite3.Connection, owner_id: int, limit: int = 20,
         cur = conn.execute(
             """SELECT id, owner_id, tg_message_id, tg_chat_id, kind, title, content,
                       source_url, raw_caption, created_at,
-                      COALESCE(thin_content, 0), deleted_at
+                      COALESCE(thin_content, 0), deleted_at, ru_summary
                FROM notes WHERE owner_id = ? AND kind = ? AND deleted_at IS NULL
                ORDER BY created_at DESC LIMIT ?""",
             (owner_id, kind, limit),
@@ -95,13 +114,14 @@ def list_recent_notes(conn: sqlite3.Connection, owner_id: int, limit: int = 20,
         cur = conn.execute(
             """SELECT id, owner_id, tg_message_id, tg_chat_id, kind, title, content,
                       source_url, raw_caption, created_at,
-                      COALESCE(thin_content, 0), deleted_at
+                      COALESCE(thin_content, 0), deleted_at, ru_summary
                FROM notes WHERE owner_id = ? AND deleted_at IS NULL
                ORDER BY created_at DESC LIMIT ?""",
             (owner_id, limit),
         )
     fields = ("id owner_id tg_message_id tg_chat_id kind title content "
-              "source_url raw_caption created_at thin_content deleted_at").split()
+              "source_url raw_caption created_at thin_content deleted_at "
+              "ru_summary").split()
     out = []
     for row in cur.fetchall():
         data = dict(zip(fields, row))

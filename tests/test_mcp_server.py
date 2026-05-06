@@ -211,6 +211,40 @@ async def test_tool_find_similar_returns_neighbor_list(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_tool_find_similar_exposes_ru_summary(tmp_path):
+    """MCP consumers (e.g. an agent) need the Russian summary surfaced
+    alongside title/content for foreign-language URL captures."""
+    import time
+    from src.core.db import open_db, init_schema
+    from src.core.owners import create_or_get_owner
+    from src.core.notes import insert_note
+    from src.core.vec import upsert_embedding
+    from src.core.models import Note
+    from src.mcp.server import tool_find_similar
+
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=42)
+
+    src_id = insert_note(conn, Note(
+        owner_id=42, tg_message_id=1, tg_chat_id=-100,
+        kind="web", content="source", created_at=int(time.time()),
+    ))
+    upsert_embedding(conn, src_id, [1.0] * 1024)
+    near_id = insert_note(conn, Note(
+        owner_id=42, tg_message_id=2, tg_chat_id=-100,
+        kind="web", content="EN body", source_url="https://example.com/x",
+        created_at=int(time.time()),
+        ru_summary="Сводка для агента.",
+    ))
+    upsert_embedding(conn, near_id, [1.01] * 1024)
+
+    out = await tool_find_similar(conn, owner_id=42, note_id=src_id, limit=5)
+    rec = next(n for n in out if n["id"] == near_id)
+    assert rec["ru_summary"] == "Сводка для агента."
+
+
+@pytest.mark.asyncio
 async def test_tool_stats_returns_iso_dates(tmp_path):
     from src.core.db import open_db, init_schema
     from src.core.owners import create_or_get_owner

@@ -8,6 +8,7 @@ from src.core.models import Note, Attachment
 from src.core.notes import (
     insert_note, find_note_id_by_message, update_note_content,
 )
+from src.core.translate import is_russian, summarize_ru
 from src.core.vec import upsert_embedding
 from src.core.attachments import insert_attachment
 from src.adapters.extractors.web import extract_web, find_first_url
@@ -45,6 +46,7 @@ async def _save_or_update_note(conn: sqlite3.Connection, *, jina,
                 conn, existing_id,
                 kind=note.kind, title=note.title, content=note.content,
                 source_url=note.source_url, raw_caption=note.raw_caption,
+                ru_summary=note.ru_summary,
             )
             if embed_text.strip():
                 embedding = await jina.embed(embed_text[:8000], role="passage")
@@ -69,7 +71,10 @@ async def _save_or_update_note(conn: sqlite3.Connection, *, jina,
 async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
                       tg_chat_id: int, tg_message_id: int,
                       text: str, caption: Optional[str], created_at: int,
-                      is_edit: bool = False) -> Optional[int]:
+                      is_edit: bool = False,
+                      openrouter=None, primary_model: Optional[str] = None,
+                      fallback_model: Optional[str] = None,
+                      ) -> Optional[int]:
     if not text.strip():
         return None
     raw = text.strip()
@@ -78,12 +83,14 @@ async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
     title: Optional[str] = None
     body = raw
     source_url: Optional[str] = None
+    extracted_only = ""  # Body of the linked article only, for language detection.
 
     if kind == "web":
         url = find_first_url(raw) or raw
         title, extracted = extract_web(url)
         source_url = url
         body = _merge_user_text_with_extract(raw, url, extracted)
+        extracted_only = (extracted or "").strip()
         is_thin = _is_thin(body)
     elif kind == "youtube":
         from src.adapters.extractors.youtube import extract_youtube
@@ -91,19 +98,76 @@ async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
         title, extracted = extract_youtube(url)
         source_url = url
         body = _merge_user_text_with_extract(raw, url, extracted)
+        extracted_only = (extracted or "").strip()
         is_thin = _is_thin(body)
     else:
         title = _make_title(raw)
         is_thin = False
 
+    # For URL kinds (web/youtube) whose extracted body is non-Russian, ask
+    # the LLM for a short Russian description. Skipped silently if the
+    # caller didn't pass an openrouter client (tests, edit-replay paths).
+    #
+    # Edit-cache: if this is an edit of a note that already carries a
+    # summary for the same source_url, reuse it. Caption-only edits are
+    # frequent (typo fixes, hashtag cleanup) and re-billing OpenRouter
+    # for them produces the same answer at extra cost and latency.
+    ru_summary: Optional[str] = None
+    if (kind in ("web", "youtube")
+            and extracted_only
+            and not is_russian(extracted_only)):
+        cached = _existing_summary_for_url(
+            conn, owner_id=owner_id, tg_chat_id=tg_chat_id,
+            tg_message_id=tg_message_id, source_url=source_url,
+        ) if is_edit else None
+        if cached:
+            ru_summary = cached
+        else:
+            ru_summary = await summarize_ru(
+                openrouter, primary=primary_model, fallback=fallback_model,
+                text=extracted_only,
+            )
+
+    # Concat the Russian summary into the embedding text so RU queries
+    # surface foreign-language links via the dense index too. Stored body
+    # stays untouched — display logic decides where to show the summary.
+    embed_text = body.strip()
+    if ru_summary:
+        embed_text = f"{embed_text}\n\n{ru_summary}"
+
     note = Note(
         owner_id=owner_id, tg_message_id=tg_message_id, tg_chat_id=tg_chat_id,
         kind=kind, title=title, content=body.strip(),
         source_url=source_url, raw_caption=caption, created_at=created_at,
-        thin_content=is_thin,
+        thin_content=is_thin, ru_summary=ru_summary,
     )
     return await _save_or_update_note(conn, jina=jina, note=note,
-                                       is_edit=is_edit, embed_text=body.strip())
+                                       is_edit=is_edit, embed_text=embed_text)
+
+
+def _existing_summary_for_url(conn: sqlite3.Connection, *, owner_id: int,
+                                tg_chat_id: int, tg_message_id: int,
+                                source_url: Optional[str]) -> Optional[str]:
+    """Return the existing note's ru_summary iff it was captured for the
+    same source_url. Used by ingest's edit path to short-circuit a fresh
+    LLM call when only the caption changed.
+
+    Returns None when no row exists, the URL changed, or the previous
+    ingest didn't produce a summary.
+    """
+    if source_url is None:
+        return None
+    row = conn.execute(
+        """SELECT source_url, ru_summary FROM notes
+           WHERE owner_id = ? AND tg_chat_id = ? AND tg_message_id = ?""",
+        (owner_id, tg_chat_id, tg_message_id),
+    ).fetchone()
+    if row is None:
+        return None
+    prev_url, prev_summary = row
+    if prev_url != source_url or not prev_summary:
+        return None
+    return prev_summary
 
 
 def _make_title(text: str) -> str:

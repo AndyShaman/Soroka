@@ -159,16 +159,34 @@ def _truncate_smart(text: str, limit: int = 200) -> str:
     return f"{head}…"
 
 
+# Per-card body cap, chosen so 5 cards fit Telegram's 4096-char limit
+# with comfortable margin (5 × 700 + separators ≈ 3.6 KB).
+_BODY_CAP_DEFAULT = 700
+# When a Russian summary row is present (≤200 chars), trim the body to
+# preserve the same total per-card budget. 700 - 200 = 500.
+_BODY_CAP_WITH_SUMMARY = 500
+
+
 def format_hit(note) -> str:
     """Render one search-result card.
 
-    Format: kind tag, link, full text body. Title/snippet duplication is
-    no longer a concern because we drop the title row entirely — the user
-    judges relevance from the body itself, not from a derived heading.
+    Format: kind tag, link, optional Russian summary (for foreign-language
+    URL captures), full text body. Title/snippet duplication is no longer
+    a concern because we drop the title row entirely — the user judges
+    relevance from the body itself, not from a derived heading.
 
     Per-card body is capped so five cards comfortably fit Telegram's
-    4096-char message limit (5 × 700 + separators ≈ 3.6 KB)."""
+    4096-char message limit. The cap shrinks when a summary row eats
+    into that budget."""
     link = message_link(note.tg_chat_id, note.tg_message_id)
-    body = _truncate_smart(_clean_snippet(note.content or ""), limit=700)
     header = f"📌 [{note.kind}]"
-    return f"{header}\n{link}\n{body}" if body else f"{header}\n{link}"
+    ru_summary = (getattr(note, "ru_summary", None) or "").strip()
+    body_cap = _BODY_CAP_WITH_SUMMARY if ru_summary else _BODY_CAP_DEFAULT
+    body = _truncate_smart(_clean_snippet(note.content or ""), limit=body_cap)
+
+    parts = [header, link]
+    if ru_summary:
+        parts.append(f"🇷🇺 {ru_summary}")
+    if body:
+        parts.append(body)
+    return "\n".join(parts)

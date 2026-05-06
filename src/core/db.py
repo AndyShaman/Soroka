@@ -90,6 +90,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE notes ADD COLUMN thin_content INTEGER DEFAULT 0")
     if not _column_exists(conn, "notes", "deleted_at"):
         conn.execute("ALTER TABLE notes ADD COLUMN deleted_at INTEGER DEFAULT NULL")
+    if not _column_exists(conn, "notes", "ru_summary"):
+        conn.execute("ALTER TABLE notes ADD COLUMN ru_summary TEXT DEFAULT NULL")
     conn.commit()
 
 

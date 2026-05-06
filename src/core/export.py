@@ -29,7 +29,7 @@ def _read_notes(db_path: Path) -> list[dict]:
         cur = conn.execute(
             "SELECT id, owner_id, tg_message_id, tg_chat_id, kind, "
             "title, content, source_url, raw_caption, created_at, "
-            "COALESCE(thin_content, 0) AS thin_content "
+            "COALESCE(thin_content, 0) AS thin_content, ru_summary "
             "FROM notes WHERE deleted_at IS NULL ORDER BY id"
         )
         cols = [d[0] for d in cur.description]

@@ -225,9 +225,12 @@ async def rerank(openrouter, primary: str, fallback: Optional[str],
     if not candidates:
         return []
 
+    # Include ru_summary alongside title/content so the LLM can match
+    # Russian queries against foreign-language captures (the dense index
+    # may have surfaced them via the summary; rerank without that signal
+    # would drop them as "irrelevant").
     blocks = "\n\n".join(
-        f"id={n.id}: {(n.title or '')[:80]}\n{n.content[:300]}"
-        for n in candidates
+        _format_rerank_block(n) for n in candidates
     )
     try:
         raw = await openrouter.complete(
@@ -247,3 +250,15 @@ async def rerank(openrouter, primary: str, fallback: Optional[str],
     by_id = {n.id: n for n in candidates}
     ordered = [by_id[i] for i in ids if i in by_id]
     return ordered[:top_k]
+
+
+def _format_rerank_block(n: Note) -> str:
+    """Render one candidate for the rerank prompt.
+
+    Order: id, title, optional ru_summary (clearly tagged so the model
+    treats it as gist rather than continuation of the body), then the
+    raw content excerpt."""
+    title = (n.title or "")[:80]
+    summary = (getattr(n, "ru_summary", None) or "").strip()
+    summary_line = f"\n[ru-кратко] {summary}" if summary else ""
+    return f"id={n.id}: {title}{summary_line}\n{n.content[:300]}"

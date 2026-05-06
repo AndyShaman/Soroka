@@ -74,3 +74,28 @@ def test_export_excludes_soft_deleted_notes(tmp_path):
     assert drop not in ids
     for n in data:
         assert n["thin_content"] in (0, 1)  # COALESCE keeps it numeric, not bool
+
+
+def test_export_includes_ru_summary(tmp_path):
+    """Russian summaries on foreign-language URL captures must round-trip
+    through the flat JSON dump so external consumers can see them."""
+    db_path = tmp_path / "soroka.db"
+    conn = open_db(str(db_path))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+    nid = insert_note(conn, Note(
+        owner_id=1, tg_message_id=1, tg_chat_id=1,
+        kind="web", title="EN title", content="EN body",
+        source_url="https://example.com/x",
+        created_at=1, ru_summary="Сводка по-русски.",
+    ))
+    conn.close()
+
+    zip_path = tmp_path / "out.zip"
+    build_export(db_path=db_path, attachments_dir=None,
+                 output_path=zip_path, lite=True)
+    with zipfile.ZipFile(zip_path) as z:
+        with z.open("notes.json") as f:
+            data = json.load(f)
+    rec = next(n for n in data if n["id"] == nid)
+    assert rec["ru_summary"] == "Сводка по-русски."

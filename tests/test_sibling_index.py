@@ -141,3 +141,58 @@ async def test_reindex_pair_skips_missing_note(tmp_path):
         ('"beta"',),
     ).fetchall()}
     assert b in rowids
+
+
+@pytest.mark.asyncio
+async def test_reindex_pair_includes_ru_summary_in_embedding(tmp_path):
+    """Foreign-language URL paired with a Russian comment: both notes'
+    embeddings must include the Russian summary so dense search via RU
+    queries surfaces either side of the pair."""
+    conn = _setup(tmp_path)
+    a = insert_note(conn, _mk(42, 1, "комментарий про статью"))
+    b_note = _mk(42, 2, "English article body about LLMs.")
+    b_note.ru_summary = "Статья про большие языковые модели."
+    b = insert_note(conn, b_note)
+
+    captured: list[str] = []
+
+    async def fake_embed(text, role):
+        captured.append(text)
+        return [0.0] * 1024
+
+    jina = MagicMock()
+    jina.embed = fake_embed
+
+    await sibling_index.reindex_pair(
+        conn, jina=jina, note_a_id=a, note_b_id=b,
+    )
+
+    # Both embeddings carry the RU summary so either note can be hit by
+    # a Russian dense query.
+    assert len(captured) == 2
+    for embed_text in captured:
+        assert "большие языковые модели" in embed_text
+
+
+@pytest.mark.asyncio
+async def test_reindex_pair_no_summary_keeps_old_behaviour(tmp_path):
+    """If neither note has ru_summary, embed text is identical to the
+    pre-feature output (content-only combined)."""
+    conn = _setup(tmp_path)
+    a = insert_note(conn, _mk(42, 1, "alpha text"))
+    b = insert_note(conn, _mk(42, 2, "beta text"))
+
+    captured: list[str] = []
+
+    async def fake_embed(text, role):
+        captured.append(text)
+        return [0.0] * 1024
+
+    jina = MagicMock()
+    jina.embed = fake_embed
+
+    await sibling_index.reindex_pair(
+        conn, jina=jina, note_a_id=a, note_b_id=b,
+    )
+
+    assert captured == ["alpha text\n\nbeta text", "beta text\n\nalpha text"]
