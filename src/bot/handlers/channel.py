@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -12,11 +13,32 @@ from src.bot.handlers import media_group
 from src.bot.handlers.reactions import (
     set_reaction, PROCESSING, SUCCESS, FAILURE, OVERSIZED, THIN,
 )
+from src.core import sibling_index
 from src.core.ingest import ingest_text, ingest_voice, ingest_document
 from src.core.kind import detect_kind_from_message
 from src.core.owners import get_owner
 
 logger = logging.getLogger(__name__)
+
+
+# Tight pair-detection window: in practice "type comment, immediately
+# forward" finishes in under a second. 2 s leaves room for slow taps
+# without admitting unrelated posts the user dropped a moment apart.
+_PAIR_WINDOW_SEC = 2.0
+
+
+@dataclass
+class _RecentSolo:
+    note_id: int
+    is_forward: bool
+    date_ts: float
+    chat_id: int
+
+
+# Process-local buffer of "last single-message ingest per chat", used
+# only by the comment+forward pair detector. Keyed by chat_id so two
+# unrelated chats never accidentally pair across each other.
+_recent_solo: dict[int, _RecentSolo] = {}
 
 
 async def channel_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -63,13 +85,58 @@ async def channel_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         await set_reaction(ctx.bot, chat_id, msg_id, emoji)
     except _OversizedFile:
         await set_reaction(ctx.bot, chat_id, msg_id, OVERSIZED)
+        return
     except Exception:
         logger.exception("ingest failed")
         await set_reaction(ctx.bot, chat_id, msg_id, FAILURE)
+        return
+
+    # Pair-detection runs only on edits-to-fresh-content paths where we
+    # actually have a note id. Edits don't form new pairs (the original
+    # message was either already paired at first ingest or not paired
+    # at all — re-pairing on edit would re-embed gratuitously).
+    if isinstance(note_id, int) and not is_edit:
+        await _maybe_pair_with_previous(ctx, conn, owner, msg, note_id)
 
 
 class _OversizedFile(Exception):
     pass
+
+
+async def _maybe_pair_with_previous(ctx, conn, owner, msg, note_id: int) -> None:
+    """If the previous solo ingest in this chat was within 2 s and forms
+    a "exactly 1 text + 1 forward" pair with the current message, mutually
+    reindex the two notes so each one's FTS row and embedding contain
+    the other's text. Then update the buffer to point at this message.
+
+    All buffer updates happen even when no pair fires — the next message
+    looks back at *this* one."""
+    chat_id = msg.chat.id
+    this_is_forward = sibling_index.is_forward(msg)
+    this_ts = msg.date.timestamp()
+
+    prev = _recent_solo.get(chat_id)
+    pair_eligible = (
+        prev is not None
+        and (this_ts - prev.date_ts) <= _PAIR_WINDOW_SEC
+        and prev.is_forward != this_is_forward
+    )
+    if pair_eligible:
+        try:
+            jina = JinaClient(api_key=owner.jina_api_key)
+            await sibling_index.reindex_pair(
+                conn, jina=jina,
+                note_a_id=prev.note_id, note_b_id=note_id,
+            )
+        except Exception:
+            logger.exception(
+                "sibling reindex failed for %s + %s", prev.note_id, note_id,
+            )
+
+    _recent_solo[chat_id] = _RecentSolo(
+        note_id=note_id, is_forward=this_is_forward,
+        date_ts=this_ts, chat_id=chat_id,
+    )
 
 
 def _safe_filename(raw: str | None, fallback_id: str) -> str:
