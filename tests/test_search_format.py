@@ -95,24 +95,21 @@ def test_truncate_smart_does_not_split_url():
 
 # ---------- format_hit -----------------------------------------------------
 
-def test_format_hit_omits_snippet_line_when_empty():
+def test_format_hit_two_lines_when_body_empty():
+    """Empty content → header + link only, no trailing blank line."""
     note = Note(
-        id=1, owner_id=1, tg_chat_id=-100, tg_message_id=1,
+        id=1, owner_id=1, tg_chat_id=-1001, tg_message_id=1,
         kind="image", title=None, content="",
         created_at=1,
     )
     out = format_hit(note)
     lines = out.splitlines()
-    # Two lines only: header + link, no trailing empty snippet line.
-    assert len(lines) == 2
-    assert lines[0].startswith("📌 [image]")
-    assert "(без подписи)" in lines[0]
+    assert lines == ["📌 [image]", "https://t.me/c/1/1"]
 
 
-def test_format_hit_falls_back_to_content_when_title_is_file_id():
-    """Image without caption: title is a file-id, content has OCR text.
-    The synthetic title must come from the first meaningful line of content,
-    NOT from the literal '(без подписи)' placeholder."""
+def test_format_hit_header_is_kind_only():
+    """Header carries the kind tag only — no title, no '(без подписи)'.
+    User judges relevance from the body row, not from a derived heading."""
     note = Note(
         id=2, owner_id=1, tg_chat_id=-100, tg_message_id=484,
         kind="image", title="photo_AQADlhJrG72ZqEt-.jpg",
@@ -120,47 +117,46 @@ def test_format_hit_falls_back_to_content_when_title_is_file_id():
         created_at=1,
     )
     out = format_hit(note)
+    lines = out.splitlines()
+    assert lines[0] == "📌 [image]"
     assert "photo_AQADlhJrG72ZqEt" not in out
     assert "(без подписи)" not in out
     assert "extreme" in out
 
 
-def test_format_hit_drops_duplicate_title_prefix():
-    """Fix #1 — when content starts with the title, strip it from snippet."""
+def test_format_hit_link_directly_after_header():
+    """Tag → link → text. Link must be on the second line so the user sees
+    it immediately, before reading the body."""
     note = Note(
-        id=3, owner_id=1, tg_chat_id=-100, tg_message_id=10,
-        kind="post", title="POV: Claude перенёсся на 6 месяцев вперёд",
-        content=(
-            "POV: Claude перенёсся на 6 месяцев вперёд и рассказал, "
-            "почему твой следующий шаг уже провалился."
-        ),
+        id=3, owner_id=1, tg_chat_id=-1001, tg_message_id=10,
+        kind="post", title="POV: что-то",
+        content="Содержимое поста.",
         created_at=1,
     )
     out = format_hit(note)
     lines = out.splitlines()
-    # Snippet line is the third one (header, link, snippet).
     assert len(lines) == 3
-    snippet = lines[2]
-    assert not snippet.startswith("POV:")
-    assert snippet.startswith("и рассказал")
+    assert lines[0] == "📌 [post]"
+    assert lines[1] == "https://t.me/c/1/10"
+    assert lines[2] == "Содержимое поста."
 
 
-def test_format_hit_falls_back_to_first_content_line():
-    """Fix #3 — file-name title + real content → synthetic title from content."""
+def test_format_hit_shows_full_body_within_cap():
+    """A 600-char body fits under the 700-char cap and is shown verbatim."""
+    body = "слово " * 100  # 600 chars
     note = Note(
         id=4, owner_id=1, tg_chat_id=-100, tg_message_id=20,
-        kind="pdf", title="notebooklm_script_v3_final.md.pdf",
-        content="Сценарий: NotebookLM. Хронометраж 12 минут.",
+        kind="text", title=None, content=body.strip(),
         created_at=1,
     )
     out = format_hit(note)
-    first_line = out.splitlines()[0]
-    assert first_line == "📌 [pdf] Сценарий: NotebookLM"
+    assert "…" not in out
+    assert out.endswith(body.strip())
 
 
 def test_format_hit_keeps_in_text_emoji():
-    """Fix #5 boundary — only LEADING bullet emojis are stripped; emojis
-    inside sentences must survive."""
+    """Only LEADING bullet emojis are stripped; emojis inside sentences
+    must survive."""
     note = Note(
         id=5, owner_id=1, tg_chat_id=-100, tg_message_id=30,
         kind="post", title="Cloud news",
