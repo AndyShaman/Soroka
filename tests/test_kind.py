@@ -13,6 +13,41 @@ def test_detect_web():
     assert detect_kind_from_text("https://example.com/article") == "web"
 
 
+def test_detect_short_wrapped_url_is_web():
+    """Two words around a URL — short enough that the extractor should
+    pull the article. Otherwise the link's vocabulary stays unsearchable."""
+    assert detect_kind_from_text(
+        "Пробовали https://github.com/garrytan/gstack ?"
+    ) == "web"
+
+
+def test_detect_short_wrapped_youtube_is_youtube():
+    """Same threshold applies to YouTube links."""
+    assert detect_kind_from_text(
+        "глянь https://youtu.be/dQw4w9WgXcQ что думаешь"
+    ) == "youtube"
+
+
+def test_detect_url_at_word_threshold_still_extracts():
+    """10-word boundary is inclusive — a 10-word note around a URL still
+    extracts. 11+ words is treated as prose that mentions a URL."""
+    ten_words = "один два три четыре пять шесть семь восемь девять https://example.com/x"
+    assert len(ten_words.split()) == 10
+    assert detect_kind_from_text(ten_words) == "web"
+
+
+def test_detect_url_above_threshold_stays_text():
+    """Long prose that happens to cite a URL is a regular note, not a
+    link card. We don't want the extractor pulling random sites that the
+    user merely referenced in a longer thought."""
+    eleven_words = (
+        "один два три четыре пять шесть семь восемь девять десять "
+        "https://example.com/x"
+    )
+    assert len(eleven_words.split()) == 11
+    assert detect_kind_from_text(eleven_words) == "text"
+
+
 def _msg(*, photo=False, caption=None, text=None):
     m = MagicMock()
     m.voice = None

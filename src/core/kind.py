@@ -1,14 +1,25 @@
-from src.adapters.extractors.web import is_url
+from src.adapters.extractors.web import find_first_url
 from src.adapters.extractors.youtube import is_youtube_url
+
+# A short message wrapped around a single link ("Пробовали https://...?",
+# "интересный пост https://...") should be treated as a link card so the
+# extractor pulls the article text. Without this, the URL stays as a bare
+# string in `content` and search can't surface it by its own keywords.
+# 10 words covers typical "comment + link" snippets but stops short of
+# becoming a heuristic for genuine prose that happens to cite a URL.
+_URL_WRAP_WORD_LIMIT = 10
 
 
 def detect_kind_from_text(text: str) -> str:
     s = text.strip()
-    if is_youtube_url(s):
+    url = find_first_url(s)
+    if url is None:
+        return "text"
+    if len(s.split()) > _URL_WRAP_WORD_LIMIT:
+        return "text"
+    if is_youtube_url(url):
         return "youtube"
-    if is_url(s):
-        return "web"
-    return "text"
+    return "web"
 
 
 def detect_kind_from_message(msg) -> str:
