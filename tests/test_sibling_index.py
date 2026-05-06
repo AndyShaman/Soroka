@@ -53,9 +53,7 @@ async def test_reindex_pair_combines_fts_content(tmp_path):
     jina.embed = AsyncMock(return_value=[0.1] * 1024)
 
     await sibling_index.reindex_pair(
-        conn, jina=jina,
-        note_a_id=a, text_a="это про агентов лучшие решения",
-        note_b_id=b, text_b="Anthropic запретил подписку в сторонних агентах",
+        conn, jina=jina, note_a_id=a, note_b_id=b,
     )
 
     rowids = {r[0] for r in conn.execute(
@@ -86,8 +84,7 @@ async def test_reindex_pair_idempotent(tmp_path):
 
     for _ in range(3):
         await sibling_index.reindex_pair(
-            conn, jina=jina,
-            note_a_id=a, text_a="alpha", note_b_id=b, text_b="beta",
+            conn, jina=jina, note_a_id=a, note_b_id=b,
         )
 
     rowids = sorted(r[0] for r in conn.execute(
@@ -109,8 +106,7 @@ async def test_reindex_pair_survives_embed_error(tmp_path):
     jina.embed = AsyncMock(side_effect=RuntimeError("rate limit"))
 
     await sibling_index.reindex_pair(
-        conn, jina=jina,
-        note_a_id=a, text_a="alpha", note_b_id=b, text_b="beta",
+        conn, jina=jina, note_a_id=a, note_b_id=b,
     )
 
     rowids = {r[0] for r in conn.execute(
@@ -123,7 +119,7 @@ async def test_reindex_pair_survives_embed_error(tmp_path):
 @pytest.mark.asyncio
 async def test_reindex_pair_skips_missing_note(tmp_path):
     """If note_a_id was deleted between scheduling and execution,
-    the helper should not crash; it should still try the surviving half."""
+    the helper must not crash. The surviving half stays valid."""
     conn = _setup(tmp_path)
     a = insert_note(conn, _mk(42, 1, "alpha"))
     b = insert_note(conn, _mk(42, 2, "beta"))
@@ -134,15 +130,14 @@ async def test_reindex_pair_skips_missing_note(tmp_path):
     jina = MagicMock()
     jina.embed = AsyncMock(return_value=[0.0] * 1024)
 
-    # Should not raise.
+    # Should not raise even though note a is gone.
     await sibling_index.reindex_pair(
-        conn, jina=jina,
-        note_a_id=a, text_a="alpha", note_b_id=b, text_b="beta",
+        conn, jina=jina, note_a_id=a, note_b_id=b,
     )
 
-    # b's FTS row should still get the combined content.
+    # b can still be found by its own token (FTS row not corrupted).
     rowids = {r[0] for r in conn.execute(
         "SELECT rowid FROM notes_fts WHERE notes_fts MATCH ?",
-        ('"alpha"',),
+        ('"beta"',),
     ).fetchall()}
     assert b in rowids

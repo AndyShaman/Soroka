@@ -32,15 +32,25 @@ def is_forward(msg) -> bool:
 
 async def reindex_pair(
     conn: sqlite3.Connection, *, jina,
-    note_a_id: int, text_a: str,
-    note_b_id: int, text_b: str,
+    note_a_id: int, note_b_id: int,
 ) -> None:
     """Mutually inject sibling text into FTS and embedding for both notes.
+
+    Reads each note's stored `content` from `notes` so that the merge
+    uses the post-extraction body (e.g. a web page's extracted article
+    text rather than the bare URL the user posted).
 
     Best-effort: failure of either half is logged but never raised.
     A Jina rate-limit shouldn't kill the FTS half — dense and BM25 are
     independent retrieval signals and either one alone still helps RRF
     surface the right notes."""
+    text_a = _read_content(conn, note_a_id)
+    text_b = _read_content(conn, note_b_id)
+    if text_a is None and text_b is None:
+        return  # both vanished; nothing to do
+
+    text_a = text_a or ""
+    text_b = text_b or ""
     combined_a = f"{text_a}\n\n{text_b}".strip()
     combined_b = f"{text_b}\n\n{text_a}".strip()
 
@@ -48,6 +58,8 @@ async def reindex_pair(
     _reindex_fts(conn, note_b_id, combined_b)
 
     for note_id, combined in ((note_a_id, combined_a), (note_b_id, combined_b)):
+        if not combined:
+            continue
         try:
             embedding = await jina.embed(combined[:8000], role="passage")
             upsert_embedding(conn, note_id, embedding)
@@ -55,6 +67,13 @@ async def reindex_pair(
             logger.exception("sibling reindex: embed for note=%s failed", note_id)
 
     logger.info("sibling pair reindexed: a=%s b=%s", note_a_id, note_b_id)
+
+
+def _read_content(conn: sqlite3.Connection, note_id: int) -> str | None:
+    row = conn.execute(
+        "SELECT content FROM notes WHERE id = ?", (note_id,),
+    ).fetchone()
+    return row[0] if row else None
 
 
 def _reindex_fts(conn: sqlite3.Connection, note_id: int, combined: str) -> None:
