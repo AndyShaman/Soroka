@@ -235,8 +235,11 @@ def list_by_filters(conn: sqlite3.Connection, *, owner_id: int,
 
 
 def _sanitize_fts(query: str) -> str:
-    # Quote tokens to avoid FTS5 syntax errors on punctuation.
-    tokens = [t for t in query.split() if t]
+    # Quote tokens to avoid FTS5 syntax errors on punctuation. Embedded
+    # double quotes are escaped per FTS5 string-literal rules ("" means
+    # a literal "); without this, a query like `мой "проект"` would
+    # break the parser because the inner " would close the phrase.
+    tokens = [t.replace('"', '""') for t in query.split() if t]
     return " ".join(f'"{t}"' for t in tokens) or '""'
 
 

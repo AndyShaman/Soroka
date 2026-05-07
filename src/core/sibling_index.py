@@ -49,6 +49,23 @@ async def reindex_pair(
     if a is None and b is None:
         return  # both vanished; nothing to do
 
+    # Persist the pair so soft_delete_note can later rebuild the
+    # surviving sibling's FTS row when its partner is deleted. Done
+    # BEFORE the manual FTS rewrite below: this UPDATE fires the
+    # notes_au trigger which resets each note's FTS row from notes.*
+    # columns, giving us a clean baseline before we inject combined.
+    if a is not None:
+        conn.execute(
+            "UPDATE notes SET sibling_note_id = ? WHERE id = ?",
+            (note_b_id, note_a_id),
+        )
+    if b is not None:
+        conn.execute(
+            "UPDATE notes SET sibling_note_id = ? WHERE id = ?",
+            (note_a_id, note_b_id),
+        )
+    conn.commit()
+
     text_a = (a[0] if a else "") or ""
     text_b = (b[0] if b else "") or ""
     sum_a = (a[1] if a else "") or ""
@@ -91,6 +108,45 @@ def _read_note_text(conn: sqlite3.Connection, note_id: int) -> tuple[str, str] |
     if row is None:
         return None
     return (row[0] or "", row[1] or "")
+
+
+def rebuild_solo_fts(conn: sqlite3.Connection, *, survivor_id: int,
+                     deleted_partner_id: int) -> None:
+    """Replace `survivor_id`'s FTS row with its un-injected content.
+
+    Used when one half of a pair is soft-deleted: the survivor's FTS
+    still carries the deleted partner's text, so BM25 keeps scoring it
+    on words it no longer represents. The 'delete' command must use
+    the *injected* combined string that's actually stored in the FTS
+    index — passing un-injected content (as the trigger would) leaves
+    a corrupt token tail behind. We reconstruct the same combined
+    string that reindex_pair wrote so the delete is exact.
+    """
+    survivor = conn.execute(
+        "SELECT title, content, raw_caption FROM notes WHERE id = ?",
+        (survivor_id,),
+    ).fetchone()
+    if survivor is None:
+        return
+    sib_title, sib_content, sib_raw = survivor
+
+    deleted = conn.execute(
+        "SELECT content FROM notes WHERE id = ?", (deleted_partner_id,),
+    ).fetchone()
+    deleted_content = (deleted[0] if deleted else "") or ""
+    injected = f"{sib_content or ''}\n\n{deleted_content}".strip()
+
+    conn.execute(
+        "INSERT INTO notes_fts(notes_fts, rowid, title, content, raw_caption) "
+        "VALUES ('delete', ?, ?, ?, ?)",
+        (survivor_id, sib_title, injected, sib_raw),
+    )
+    conn.execute(
+        "INSERT INTO notes_fts(rowid, title, content, raw_caption) "
+        "VALUES (?, ?, ?, ?)",
+        (survivor_id, sib_title, sib_content, sib_raw),
+    )
+    conn.commit()
 
 
 def _reindex_fts(conn: sqlite3.Connection, note_id: int, combined: str) -> None:

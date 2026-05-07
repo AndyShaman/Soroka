@@ -175,6 +175,102 @@ async def test_reindex_pair_includes_ru_summary_in_embedding(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reindex_pair_persists_sibling_link(tmp_path):
+    """After pairing, both notes should record their partner so a later
+    soft_delete on either one can rebuild the survivor's FTS row."""
+    conn = _setup(tmp_path)
+    a = insert_note(conn, _mk(42, 1, "alpha"))
+    b = insert_note(conn, _mk(42, 2, "beta"))
+
+    jina = MagicMock()
+    jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    await sibling_index.reindex_pair(
+        conn, jina=jina, note_a_id=a, note_b_id=b,
+    )
+
+    rows = dict(conn.execute(
+        "SELECT id, sibling_note_id FROM notes WHERE id IN (?, ?)", (a, b)
+    ).fetchall())
+    assert rows[a] == b
+    assert rows[b] == a
+
+
+def test_soft_delete_clears_sibling_fts_injection(tmp_path):
+    """When one half of a pair is soft-deleted, the survivor's FTS row
+    must drop the injected text — otherwise BM25 keeps matching the
+    survivor on words that came from the deleted partner."""
+    import asyncio
+    from src.core.notes import soft_delete_note
+
+    conn = _setup(tmp_path)
+    a = insert_note(conn, _mk(42, 1, "alpha"))
+    b = insert_note(conn, _mk(42, 2, "beta"))
+
+    jina = MagicMock()
+    jina.embed = AsyncMock(return_value=[0.0] * 1024)
+    asyncio.run(sibling_index.reindex_pair(
+        conn, jina=jina, note_a_id=a, note_b_id=b,
+    ))
+
+    # Sanity: before delete, b matches "alpha" via injected text.
+    pre = {r[0] for r in conn.execute(
+        "SELECT rowid FROM notes_fts WHERE notes_fts MATCH ?", ('"alpha"',),
+    ).fetchall()}
+    assert b in pre
+
+    soft_delete_note(conn, a, reason="test")
+
+    # After delete: b no longer matches the deleted partner's word, and
+    # the link was cleared on both sides.
+    post = {r[0] for r in conn.execute(
+        "SELECT rowid FROM notes_fts WHERE notes_fts MATCH ?", ('"alpha"',),
+    ).fetchall()}
+    assert b not in post
+
+    rows = dict(conn.execute(
+        "SELECT id, sibling_note_id FROM notes WHERE id IN (?, ?)", (a, b)
+    ).fetchall())
+    assert rows[a] is None
+    assert rows[b] is None
+
+
+def test_soft_delete_ignores_self_referential_sibling(tmp_path):
+    """sibling_note_id pointing at the note's own id is corrupt state
+    (data invariant break) — soft_delete_note must not feed it to
+    rebuild_solo_fts, which would synthesize junk combined text and
+    try to delete an FTS row that never existed in that form."""
+    from src.core.notes import soft_delete_note
+
+    conn = _setup(tmp_path)
+    a = insert_note(conn, _mk(42, 1, "alpha"))
+    conn.execute(
+        "UPDATE notes SET sibling_note_id = ? WHERE id = ?", (a, a))
+    conn.commit()
+
+    # Should soft-delete cleanly without raising on the self-ref.
+    assert soft_delete_note(conn, a, reason="test") is True
+
+
+def test_soft_delete_unpaired_note_is_noop(tmp_path):
+    """Notes that were never paired must soft-delete cleanly without
+    touching any other rows — sibling_note_id stays NULL across the
+    board."""
+    from src.core.notes import soft_delete_note
+
+    conn = _setup(tmp_path)
+    a = insert_note(conn, _mk(42, 1, "alpha"))
+    b = insert_note(conn, _mk(42, 2, "beta"))
+
+    assert soft_delete_note(conn, a, reason="test") is True
+    rows = dict(conn.execute(
+        "SELECT id, sibling_note_id FROM notes WHERE id IN (?, ?)", (a, b)
+    ).fetchall())
+    assert rows[a] is None
+    assert rows[b] is None
+
+
+@pytest.mark.asyncio
 async def test_reindex_pair_no_summary_keeps_old_behaviour(tmp_path):
     """If neither note has ru_summary, embed text is identical to the
     pre-feature output (content-only combined)."""

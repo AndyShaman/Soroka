@@ -34,23 +34,31 @@ def _is_thin(body: str) -> bool:
 async def _save_or_update_note(conn: sqlite3.Connection, *, jina,
                                 note: Note, is_edit: bool,
                                 embed_text: str) -> Optional[int]:
-    """Insert a new note or, on edit, update the existing one in place
-    and re-embed. Returns the resulting note id, or None if a new-post
-    insert lost a duplicate race."""
+    """Insert (or update on edit) a note and embed it as one atomic
+    unit. If the Jina call fails, the note write is rolled back so we
+    never end up with a BM25-only row that dense search can't see.
+
+    Returns the resulting note id, or None if a new-post insert lost a
+    duplicate race."""
     if is_edit:
         existing_id = find_note_id_by_message(
             conn, note.owner_id, note.tg_chat_id, note.tg_message_id,
         )
         if existing_id is not None:
-            update_note_content(
-                conn, existing_id,
-                kind=note.kind, title=note.title, content=note.content,
-                source_url=note.source_url, raw_caption=note.raw_caption,
-                ru_summary=note.ru_summary,
-            )
-            if embed_text.strip():
-                embedding = await jina.embed(embed_text[:8000], role="passage")
-                upsert_embedding(conn, existing_id, embedding)
+            try:
+                update_note_content(
+                    conn, existing_id,
+                    kind=note.kind, title=note.title, content=note.content,
+                    source_url=note.source_url, raw_caption=note.raw_caption,
+                    ru_summary=note.ru_summary, commit=False,
+                )
+                if embed_text.strip():
+                    embedding = await jina.embed(embed_text[:8000], role="passage")
+                    upsert_embedding(conn, existing_id, embedding)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
             logger.info(
                 "note edited: id=%s owner=%s chat=%s msg=%s",
                 existing_id, note.owner_id, note.tg_chat_id, note.tg_message_id,
@@ -59,12 +67,18 @@ async def _save_or_update_note(conn: sqlite3.Connection, *, jina,
         # Edit of a message we never saw (bot was offline) — fall through
         # to a fresh insert.
 
-    note_id = insert_note(conn, note)
-    if note_id is None:
-        return None
-    if embed_text.strip():
-        embedding = await jina.embed(embed_text[:8000], role="passage")
-        upsert_embedding(conn, note_id, embedding)
+    try:
+        note_id = insert_note(conn, note, commit=False)
+        if note_id is None:
+            conn.rollback()
+            return None
+        if embed_text.strip():
+            embedding = await jina.embed(embed_text[:8000], role="passage")
+            upsert_embedding(conn, note_id, embedding)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return note_id
 
 
@@ -91,7 +105,10 @@ async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
         source_url = url
         body = _merge_user_text_with_extract(raw, url, extracted)
         extracted_only = (extracted or "").strip()
-        is_thin = _is_thin(body)
+        # Thin only when the extractor itself produced nothing useful;
+        # the user's wrap text doesn't make the linked article richer,
+        # so it shouldn't disguise an extractor failure.
+        is_thin = _is_thin(extracted_only)
     elif kind == "youtube":
         from src.adapters.extractors.youtube import extract_youtube
         url = find_first_url(raw) or raw
@@ -99,7 +116,7 @@ async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
         source_url = url
         body = _merge_user_text_with_extract(raw, url, extracted)
         extracted_only = (extracted or "").strip()
-        is_thin = _is_thin(body)
+        is_thin = _is_thin(extracted_only)
     else:
         title = _make_title(raw)
         is_thin = False
@@ -208,7 +225,11 @@ async def ingest_voice(conn: sqlite3.Connection, *, deepgram, jina,
         owner_id=owner_id, tg_message_id=tg_message_id, tg_chat_id=tg_chat_id,
         kind="voice", title=_make_title(transcript), content=transcript.strip(),
         raw_caption=caption, created_at=created_at,
-        thin_content=_is_thin(transcript),
+        # Voice transcripts are never thin: a successful STT result is
+        # genuine content even when it's a curt "да" or "через час".
+        # thin_content stays as the marker for "extractor produced
+        # nothing", and STT didn't.
+        thin_content=False,
     )
     return await _save_or_update_note(conn, jina=jina, note=note,
                                        is_edit=is_edit, embed_text=transcript)

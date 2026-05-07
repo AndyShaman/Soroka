@@ -92,6 +92,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE notes ADD COLUMN deleted_at INTEGER DEFAULT NULL")
     if not _column_exists(conn, "notes", "ru_summary"):
         conn.execute("ALTER TABLE notes ADD COLUMN ru_summary TEXT DEFAULT NULL")
+    if not _column_exists(conn, "notes", "sibling_note_id"):
+        # Persists the comment+forward pair so soft_delete_note can
+        # rebuild the survivor's FTS row when its partner is deleted.
+        conn.execute(
+            "ALTER TABLE notes ADD COLUMN sibling_note_id INTEGER DEFAULT NULL"
+        )
     conn.commit()
 
 
@@ -106,8 +112,61 @@ def open_db(path: str) -> sqlite3.Connection:
     return conn
 
 
+# Bumped whenever a code change makes the FTS index need a rebuild
+# (new tokenizer, schema column folded into FTS, etc). On startup we
+# rebuild the inverted index once and stamp this value into PRAGMA
+# user_version so subsequent runs skip the work.
+_FTS_SCHEMA_VERSION = 1
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     conn.executescript(VEC_TABLE)
     conn.commit()
     _migrate(conn)
+    _ensure_fts_coverage(conn)
+
+
+def _ensure_fts_coverage(conn: sqlite3.Connection) -> None:
+    """Run an idempotent FTS5 rebuild when the DB's recorded
+    user_version trails the current code's _FTS_SCHEMA_VERSION. Old
+    DBs created before the FTS triggers existed have rows in `notes`
+    that the inverted index doesn't cover; rebuild fixes them.
+
+    A plain `COUNT(*) FROM notes_fts` can't be used as the trigger:
+    for an external-content FTS5 table that count returns the source
+    row count, not the indexed one, so a stale index is invisible.
+
+    Sibling-pair text was injected manually by reindex_pair; rebuild
+    drops it, so we re-inject from sibling_note_id afterward."""
+    current = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current >= _FTS_SCHEMA_VERSION:
+        return
+    conn.execute("INSERT INTO notes_fts(notes_fts) VALUES('rebuild')")
+    _reinject_sibling_pairs(conn)
+    conn.execute(f"PRAGMA user_version = {_FTS_SCHEMA_VERSION}")
+    conn.commit()
+
+
+def _reinject_sibling_pairs(conn: sqlite3.Connection) -> None:
+    """Walk all notes that record a sibling and rewrite each side's
+    FTS row to contain the concatenated pair text. Idempotent: rebuild
+    just dropped any previous injection, so we start from clean rows."""
+    rows = conn.execute(
+        "SELECT n.id, n.title, n.content, n.raw_caption, s.content "
+        "FROM notes n JOIN notes s ON n.sibling_note_id = s.id "
+        "WHERE n.sibling_note_id IS NOT NULL "
+        "AND n.deleted_at IS NULL AND s.deleted_at IS NULL"
+    ).fetchall()
+    for n_id, title, content, raw, sib_content in rows:
+        combined = f"{content or ''}\n\n{sib_content or ''}".strip()
+        conn.execute(
+            "INSERT INTO notes_fts(notes_fts, rowid, title, content, raw_caption) "
+            "VALUES ('delete', ?, ?, ?, ?)",
+            (n_id, title, content, raw),
+        )
+        conn.execute(
+            "INSERT INTO notes_fts(rowid, title, content, raw_caption) "
+            "VALUES (?, ?, ?, ?)",
+            (n_id, title, combined, raw),
+        )

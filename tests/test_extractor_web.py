@@ -33,8 +33,8 @@ def test_find_first_url_returns_first_of_many():
 
 def test_extract_web_uses_trafilatura(monkeypatch):
     monkeypatch.setattr(
-        "src.adapters.extractors.web.trafilatura.fetch_url",
-        lambda url, **kw: "<html><body><p>article body</p></body></html>",
+        "src.adapters.extractors.web._safe_fetch",
+        lambda url: "<html><body><p>article body</p></body></html>",
     )
     monkeypatch.setattr(
         "src.adapters.extractors.web.trafilatura.extract",
@@ -42,3 +42,37 @@ def test_extract_web_uses_trafilatura(monkeypatch):
     )
     title, text = extract_web("https://example.com/x")
     assert "article body" in text
+
+
+def test_extract_web_blocks_loopback_url(monkeypatch):
+    """A URL that resolves to 127.0.0.1 must not reach the network — the
+    SSRF guard should swallow it and return empty text so ingestion
+    silently falls back to plain-text storage."""
+    monkeypatch.setattr(
+        "src.adapters.extractors.web.socket.getaddrinfo",
+        lambda host, port: [(0, 0, 0, "", ("127.0.0.1", 0))],
+    )
+    title, text = extract_web("http://internal.example/x")
+    assert title is None
+    assert text == ""
+
+
+def test_extract_web_blocks_private_ip_url(monkeypatch):
+    monkeypatch.setattr(
+        "src.adapters.extractors.web.socket.getaddrinfo",
+        lambda host, port: [(0, 0, 0, "", ("192.168.1.5", 0))],
+    )
+    title, text = extract_web("http://router.local/admin")
+    assert (title, text) == (None, "")
+
+
+def test_extract_web_rejects_non_http_scheme():
+    """file:// URLs must not be fetched even if the regex accepted them
+    upstream — defence in depth in case find_first_url is bypassed."""
+    title, text = extract_web("file:///etc/passwd")
+    assert (title, text) == (None, "")
+
+
+def test_extract_web_rejects_userinfo():
+    title, text = extract_web("http://user:pass@example.com/")
+    assert (title, text) == (None, "")

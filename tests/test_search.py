@@ -5,7 +5,33 @@ from src.core.owners import create_or_get_owner
 from src.core.notes import insert_note
 from src.core.vec import upsert_embedding
 from src.core.models import Note
-from src.core.search import hybrid_search
+from src.core.search import hybrid_search, _sanitize_fts
+
+
+def test_sanitize_fts_escapes_embedded_double_quotes():
+    """A query containing a literal `"` must not break FTS5 parsing.
+    FTS5 escapes a quote inside a phrase by doubling it (``""``);
+    without that, `мой "проект"` would close the phrase early and
+    leave dangling tokens that raise an FTS5 syntax error."""
+    sanitized = _sanitize_fts('мой "проект"')
+    assert sanitized == '"мой" """проект"""'
+
+
+def test_sanitize_fts_keeps_db_query_executable(tmp_path):
+    """End-to-end check: an FTS query produced from a quote-containing
+    user input must execute without raising. We don't care about the
+    rowids — just that SQLite parses the MATCH expression."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+    insert_note(conn, Note(
+        owner_id=1, tg_message_id=1, tg_chat_id=-1,
+        kind="text", content="моя цитата", created_at=1,
+    ))
+    fts_q = _sanitize_fts('мой "проект"')
+    conn.execute(
+        "SELECT rowid FROM notes_fts WHERE notes_fts MATCH ?", (fts_q,),
+    ).fetchall()
 
 
 def _seed(tmp_path):

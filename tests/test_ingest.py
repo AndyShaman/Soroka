@@ -60,6 +60,62 @@ async def test_ingest_text_edit_overwrites_content_and_reembeds(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_ingest_rolls_back_when_jina_fails(tmp_path):
+    """If Jina raises mid-ingest the note must NOT be left in the DB —
+    otherwise BM25 would surface a row that dense search can't see, and
+    every retry would skip it via INSERT OR IGNORE."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+    update_owner_field(conn, 1, "jina_api_key", "k")
+
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(side_effect=RuntimeError("rate limit"))
+
+    with pytest.raises(RuntimeError):
+        await ingest_text(
+            conn, jina=fake_jina, owner_id=1,
+            tg_chat_id=-100, tg_message_id=42,
+            text="будет откатано", caption=None, created_at=1000,
+        )
+
+    rows = conn.execute(
+        "SELECT id FROM notes WHERE tg_message_id = 42"
+    ).fetchall()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_ingest_edit_rolls_back_when_jina_fails(tmp_path):
+    """On edit, a Jina failure must leave the note's previous content
+    intact — partial updates would diverge BM25 from dense."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+    update_owner_field(conn, 1, "jina_api_key", "k")
+
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.1] * 1024)
+    first = await ingest_text(
+        conn, jina=fake_jina, owner_id=1,
+        tg_chat_id=-100, tg_message_id=42,
+        text="старая версия", caption=None, created_at=1000,
+    )
+
+    fake_jina.embed = AsyncMock(side_effect=RuntimeError("rate limit"))
+    with pytest.raises(RuntimeError):
+        await ingest_text(
+            conn, jina=fake_jina, owner_id=1,
+            tg_chat_id=-100, tg_message_id=42,
+            text="новая версия", caption=None, created_at=1000,
+            is_edit=True,
+        )
+
+    n = get_note(conn, first)
+    assert n.content == "старая версия", "edit should have rolled back"
+
+
+@pytest.mark.asyncio
 async def test_ingest_text_edit_inserts_when_message_not_seen(tmp_path):
     """Edit of a message the bot never saw (offline during the original
     send) should fall back to a fresh insert."""
@@ -198,6 +254,63 @@ async def test_ingest_voice_transcribes_and_stores(tmp_path):
     n = get_note(conn, note_id)
     assert n.kind == "voice"
     assert n.content == "голосовая заметка"
+
+
+@pytest.mark.asyncio
+async def test_ingest_short_voice_is_not_thin(tmp_path):
+    """A successful STT result is real content even when it's a curt
+    "да" or "через час". thin_content must stay False so search can
+    surface short voice memos — they're often the most action-relevant."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    fake_dg = AsyncMock()
+    fake_dg.transcribe = AsyncMock(return_value="да")
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    from src.core.ingest import ingest_voice
+    note_id = await ingest_voice(
+        conn, deepgram=fake_dg, jina=fake_jina, owner_id=1,
+        tg_chat_id=-1, tg_message_id=11,
+        audio_bytes=b"FAKE", mime="audio/ogg", caption=None, created_at=1,
+    )
+    n = get_note(conn, note_id)
+    assert n.thin_content is False
+
+
+@pytest.mark.asyncio
+async def test_ingest_web_thin_tracks_extracted_only_not_user_text(
+    tmp_path, monkeypatch,
+):
+    """When the message is routed as kind='web' (bare URL or short
+    wrap text), the thin flag must reflect what the EXTRACTOR produced
+    — long extracted body keeps the note out of the thin bucket even
+    though the user wrote nothing themselves."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+    long_extracted = (
+        "Article body covering several paragraphs about how large "
+        "language models are trained, scaled, and evaluated across "
+        "diverse benchmarks. " * 5
+    )
+    monkeypatch.setattr(
+        "src.core.ingest.extract_web", lambda url: ("Title", long_extracted),
+    )
+
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    note_id = await ingest_text(
+        conn, jina=fake_jina, owner_id=1,
+        tg_chat_id=-1, tg_message_id=20,
+        text="https://example.com/article", caption=None, created_at=1,
+    )
+    n = get_note(conn, note_id)
+    assert n.kind == "web"
+    assert n.thin_content is False
 
 
 @pytest.mark.asyncio

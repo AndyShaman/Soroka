@@ -22,9 +22,12 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from zoneinfo import ZoneInfo
+
 from src.core.db import open_db, init_schema
+from src.core.intent import parse_intent
 from src.core.owners import get_owner
-from src.core.search import hybrid_search
+from src.core.search import hybrid_search, list_by_filters
 from src.adapters.jina import JinaClient
 
 
@@ -56,10 +59,29 @@ def load_golden(path: Path) -> list[GoldenCase]:
 
 
 async def run_case(conn, owner, jina, case: GoldenCase, k: int = 5):
-    notes = await hybrid_search(
-        conn, jina=jina, owner_id=owner.telegram_id,
-        clean_query=case.query, kind=None, limit=k,
-    )
+    """Resolve the query the same way production does: parse the intent
+    so date/kind filters and list_mode queries (e.g. "все голосовые",
+    "что было в мае") exercise the SQL path instead of silently
+    falling back to a generic dense lookup."""
+    intent = parse_intent(case.query, tz=ZoneInfo(owner.owner_timezone)
+                          if hasattr(owner, "owner_timezone") else
+                          ZoneInfo("Europe/Moscow"))
+    if intent.list_mode:
+        notes = list_by_filters(
+            conn, owner_id=owner.telegram_id,
+            kind=intent.kind, since_days=intent.since_days,
+            created_after=intent.created_after,
+            created_before=intent.created_before,
+            limit=k,
+        )
+    else:
+        notes = await hybrid_search(
+            conn, jina=jina, owner_id=owner.telegram_id,
+            clean_query=intent.clean_query, kind=intent.kind, limit=k,
+            since_days=intent.since_days,
+            created_after=intent.created_after,
+            created_before=intent.created_before,
+        )
     return [n.id for n in notes]
 
 

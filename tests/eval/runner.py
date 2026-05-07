@@ -19,7 +19,7 @@ from src.core.intent import parse_intent
 from src.core.models import Note
 from src.core.notes import insert_note
 from src.core.owners import create_or_get_owner
-from src.core.search import hybrid_search, rerank
+from src.core.search import hybrid_search, list_by_filters, rerank
 from src.core.vec import upsert_embedding
 
 from tests.eval.corpus import NOTES
@@ -85,13 +85,30 @@ async def run_query(
     raw_query: str,
 ) -> list[int]:
     """Take a raw user query and return the ranked top-K note IDs that
-    the bot would actually show. Pipeline: parse_intent ->
-    hybrid_search -> rerank. Empty result returns []."""
+    the bot would actually show. Mirrors the production routing in
+    src/bot/handlers/search.py: list_mode (filter-only intents like
+    "все голосовые" or "что было в мае") goes through list_by_filters;
+    everything else goes through hybrid_search + rerank. Date filters
+    are forwarded so eval can catch regressions in the SQL path."""
     from zoneinfo import ZoneInfo
     intent = parse_intent(raw_query, tz=ZoneInfo("Europe/Moscow"))
+
+    if intent.list_mode:
+        notes = list_by_filters(
+            conn, owner_id=OWNER_ID,
+            kind=intent.kind, since_days=intent.since_days,
+            created_after=intent.created_after,
+            created_before=intent.created_before,
+            limit=TOP_K,
+        )
+        return [n.id for n in notes[:TOP_K]]
+
     candidates = await hybrid_search(
         conn, jina=jina, owner_id=OWNER_ID,
         clean_query=intent.clean_query, kind=intent.kind, limit=HYBRID_LIMIT,
+        since_days=intent.since_days,
+        created_after=intent.created_after,
+        created_before=intent.created_before,
     )
     if not candidates:
         return []
