@@ -203,7 +203,41 @@ def parse_intent(query: str, *, tz: ZoneInfo,
                     since_days = int(m.group(1))
                     matched.append(m.span())
 
-    # 6. Month name: «в мае [2025]» / «за апрель 2024» / «мая 2025».
+    # 6a. Specific calendar date: «5 мая», «6 мая 2025», «10 апреля
+    #     2024». Single-day window. Runs BEFORE the month-only rule so
+    #     «5 мая» picks the day, not the whole month. Ambiguous bare
+    #     dates (no year) default to the current year, falling back to
+    #     last year if the resulting date would be in the future.
+    if created_after is None:
+        for mo, forms in MONTHS.items():
+            joined = "|".join(forms)
+            pat = rf"\b(\d{{1,2}})\s+(?:{joined})(?:\s+(\d{{4}}))?\b"
+            m = re.search(pat, text)
+            if not m:
+                continue
+            day = int(m.group(1))
+            if not 1 <= day <= 31:
+                continue
+            year_str = m.group(2)
+            if year_str:
+                y = int(year_str)
+            else:
+                y = now_local.year
+                try:
+                    if datetime(y, mo, day, tzinfo=tz) > now_local:
+                        y -= 1
+                except ValueError:
+                    continue
+            try:
+                start = datetime(y, mo, day, tzinfo=tz)
+            except ValueError:
+                continue
+            end = start + timedelta(days=1)
+            created_after, created_before = _epoch(start), _epoch(end)
+            matched.append(m.span())
+            break
+
+    # 6b. Month name: «в мае [2025]» / «за апрель 2024» / «мая 2025».
     #    Bare «май» without preposition or year stays a keyword (codex
     #    advice: avoids stealing words from real topic queries).
     if created_after is None:

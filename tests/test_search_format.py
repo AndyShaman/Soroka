@@ -178,7 +178,7 @@ def test_format_hit_renders_ru_summary_between_link_and_body():
     assert lines[0] == f"📌 [web]{HEADER_DATE}"
     assert lines[1] == "https://t.me/c/1/40"
     assert lines[2] == "https://example.com/x"
-    assert lines[3] == "🇷🇺 Статья про большие языковые модели."
+    assert lines[3] == "Статья про большие языковые модели."
     assert lines[4] == "This is the English article body about LLMs."
 
 
@@ -260,7 +260,7 @@ def test_format_hit_inserts_source_url_between_link_and_summary():
     assert lines[0] == f"📌 [web]{HEADER_DATE}"
     assert lines[1] == "https://t.me/c/1/50"
     assert lines[2] == "https://github.com/foo/bar"
-    assert lines[3] == "🇷🇺 Описание репозитория."
+    assert lines[3] == "Описание репозитория."
     assert lines[4] == "English article body."
 
 

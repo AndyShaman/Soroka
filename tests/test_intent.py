@@ -45,6 +45,48 @@ def test_in_may_uses_current_year_when_not_yet_passed():
     assert out.created_before == _epoch(datetime(2026, 6, 1, tzinfo=TZ))
 
 
+def test_specific_date_without_year_uses_single_day_window():
+    """«5 мая» from May 7 2026 — same year, single day. The narrower
+    rule must beat the month-only rule so users don't get a 31-day
+    window when they asked for one day."""
+    out = parse_intent("5 мая", tz=TZ, now=NOW)
+    assert out.list_mode is True
+    assert out.clean_query == ""
+    assert out.created_after == _epoch(datetime(2026, 5, 5, tzinfo=TZ))
+    assert out.created_before == _epoch(datetime(2026, 5, 6, tzinfo=TZ))
+
+
+def test_specific_date_with_year_pins_exact_day():
+    out = parse_intent("10 апреля 2024", tz=TZ, now=NOW)
+    assert out.created_after == _epoch(datetime(2024, 4, 10, tzinfo=TZ))
+    assert out.created_before == _epoch(datetime(2024, 4, 11, tzinfo=TZ))
+
+
+def test_specific_date_in_future_falls_back_to_previous_year():
+    """«10 декабря» from May 7 2026 → December 10 2025 (most recent
+    past), not the upcoming December."""
+    out = parse_intent("10 декабря", tz=TZ, now=NOW)
+    assert out.created_after == _epoch(datetime(2025, 12, 10, tzinfo=TZ))
+    assert out.created_before == _epoch(datetime(2025, 12, 11, tzinfo=TZ))
+
+
+def test_specific_date_combines_with_kind():
+    """«статьи 5 мая» — kind=web AND single-day window."""
+    out = parse_intent("статьи 5 мая", tz=TZ, now=NOW)
+    assert out.kind == "web"
+    assert out.list_mode is True
+    assert out.created_after == _epoch(datetime(2026, 5, 5, tzinfo=TZ))
+
+
+def test_invalid_day_falls_through_to_clean_query():
+    """«32 мая» is not a valid date — keep it as residual instead of
+    silently producing some other window."""
+    out = parse_intent("32 мая", tz=TZ, now=NOW)
+    assert out.created_after is None
+    assert out.created_before is None
+    assert "32" in out.clean_query
+
+
 def test_in_future_month_falls_back_to_previous_year():
     # December 2026 is in the future relative to May 2026 → previous year.
     out = parse_intent("в декабре", tz=TZ, now=NOW)

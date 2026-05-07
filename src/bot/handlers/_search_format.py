@@ -227,7 +227,7 @@ def format_hit(note, tz: ZoneInfo) -> str:
     if source_url_row:
         parts.append(source_url_row)
     if ru_summary:
-        parts.append(f"🇷🇺 {ru_summary}")
+        parts.append(ru_summary)
     if body:
         parts.append(body)
     return "\n".join(parts)
