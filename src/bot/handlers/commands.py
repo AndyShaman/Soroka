@@ -1,9 +1,63 @@
 import datetime as dt
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+
+# Hosts and users we accept for /setvps. The values become argv tokens
+# inside the MCP `ssh` invocation; restricting to this set prevents shell
+# metacharacters from sneaking in even though we never go through a shell.
+_VPS_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _parse_vps_input(text: str) -> tuple[str | None, str] | None:
+    """Return (vps_user, vps_host) for a valid /setvps input, or None.
+
+    Two formats accepted:
+        "alias"          → (None, "alias")          ssh myvps soroka-mcp
+        "user@host"      → ("user", "host")         ssh ubuntu@1.2.3.4 soroka-mcp
+
+    `host` may be an IP, a DNS name, or an alias from the user's
+    ~/.ssh/config — we don't try to distinguish, ssh on the user's
+    machine resolves it.
+    """
+    text = text.strip()
+    if not text:
+        return None
+    if "@" in text:
+        user, _, host = text.partition("@")
+        if not _VPS_TOKEN_RE.fullmatch(user) or not _VPS_TOKEN_RE.fullmatch(host):
+            return None
+        return user, host
+    if not _VPS_TOKEN_RE.fullmatch(text):
+        return None
+    return None, text
+
+
+VPS_PROMPT = (
+    "Как ты обычно заходишь на свой VPS по SSH?\n\n"
+    "*Вариант 1 — алиас из `~/.ssh/config`* (рекомендуется).\n"
+    "Если ходишь командой вроде `ssh myserver`, и в `~/.ssh/config` "
+    "есть блок `Host myserver` с прописанными `HostName`, `User`, "
+    "`IdentityFile` — пришли только имя алиаса:\n"
+    "`myserver`\n\n"
+    "*Вариант 2 — `user@host` напрямую.*\n"
+    "Если ходишь командой вроде `ssh ubuntu@198.51.100.42` или "
+    "`ssh ubuntu@vps.example.com` — пришли ту же строку:\n"
+    "`ubuntu@198.51.100.42`\n"
+    "`ubuntu@vps.example.com`\n\n"
+    "Бот подставит это в MCP-конфиг как есть. SSH на твоей машине "
+    "сам подтянет ключ и пользователя — из `~/.ssh/config` либо как "
+    "ты указал."
+)
+
+VPS_REJECT = (
+    "Не похоже на алиас или `user@host`. Допустимы буквы, цифры, "
+    "точка, дефис, подчёркивание — без пробелов и спецсимволов. "
+    "/cancel или попробуй ещё раз."
+)
 
 from src.adapters.github_mirror import GitHubMirror, GitHubMirrorError
 from src.bot.auth import is_owner
@@ -107,7 +161,7 @@ PENDING_PROMPTS = {
     "deepgram":  ("deepgram_api_key", "Пришли новый ключ Deepgram."),
     "key":       ("openrouter_key", "Пришли новый ключ OpenRouter."),
     "github":    ("github_pair", "Пришли одной строкой: `<token> <user>/<repo>`."),
-    "vps":       ("vps_pair", "Пришли одной строкой: `<user>@<ip>` (например `user@203.0.113.10`)."),
+    "vps":       ("vps_pair", VPS_PROMPT),
     "inbox":     ("inbox", "Форвардни сюда сообщение из нового канала."),
 }
 
@@ -173,10 +227,11 @@ async def pending_set_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) ->
         update_owner_field(conn, owner_id, "github_mirror_repo", parts[1])
 
     elif pending == "vps":
-        if "@" not in text:
-            await update.message.reply_text("Формат: `<user>@<ip>`. /cancel или попробуй ещё раз.")
+        parsed = _parse_vps_input(text)
+        if parsed is None:
+            await update.message.reply_text(VPS_REJECT, parse_mode="Markdown")
             return
-        user, host = text.split("@", 1)
+        user, host = parsed
         update_owner_field(conn, owner_id, "vps_user", user)
         update_owner_field(conn, owner_id, "vps_host", host)
 
@@ -198,18 +253,24 @@ async def mcp_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     owner = get_owner(conn, settings.owner_telegram_id)
-    if not owner or not owner.vps_host or not owner.vps_user:
+    if not owner or not owner.vps_host:
         await update.message.reply_text(
             "Сначала задай VPS-доступ через /setvps "
             "(нужны для генерации SSH-команды в конфиге).")
         return
 
+    # Bare-alias mode (`vps_user is None`): the user already has an
+    # ~/.ssh/config Host entry that resolves user/key/hostname, so we
+    # pass just the alias and let ssh look it up.
+    ssh_target = (
+        f"{owner.vps_user}@{owner.vps_host}" if owner.vps_user else owner.vps_host
+    )
     config = (
         '{\n'
         '  "mcpServers": {\n'
         '    "soroka": {\n'
         '      "command": "ssh",\n'
-        f'      "args": ["{owner.vps_user}@{owner.vps_host}", "soroka-mcp"]\n'
+        f'      "args": ["{ssh_target}", "soroka-mcp"]\n'
         '    }\n'
         '  }\n'
         '}'
