@@ -477,6 +477,127 @@ async def test_ingest_post_skips_garbage_ocr(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ingest_document_text_file_reads_body(tmp_path):
+    """A .md/.txt upload must end up in the DB with the file's body as
+    `content` — otherwise full-text search can't find anything beyond
+    the filename."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    md_path = tmp_path / "notes.md"
+    md_path.write_text(
+        "# План\n\nТеория переключения контекста и спринты.",
+        encoding="utf-8",
+    )
+
+    from src.core.ingest import ingest_document
+    note_id = await ingest_document(
+        conn, jina=fake_jina, owner_id=1,
+        tg_chat_id=-1, tg_message_id=60,
+        local_path=md_path, original_name="notes.md",
+        kind="text_file", file_size=md_path.stat().st_size,
+        caption=None, created_at=1, is_oversized=False,
+    )
+    from src.core.notes import get_note
+    n = get_note(conn, note_id)
+    assert n.kind == "text_file"
+    assert n.title == "notes.md"
+    assert "План" in n.content
+    assert "переключения контекста" in n.content
+    fake_jina.embed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ingest_document_text_file_combines_caption_and_body(tmp_path):
+    """When the user attaches a caption to the file, that caption is the
+    user's own commentary — surface it ahead of the file body so it leads
+    the snippet."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    txt_path = tmp_path / "log.txt"
+    txt_path.write_text("чёрный ящик: запись 7", encoding="utf-8")
+
+    from src.core.ingest import ingest_document
+    note_id = await ingest_document(
+        conn, jina=fake_jina, owner_id=1,
+        tg_chat_id=-1, tg_message_id=61,
+        local_path=txt_path, original_name="log.txt",
+        kind="text_file", file_size=txt_path.stat().st_size,
+        caption="заметка с серверов",
+        created_at=1, is_oversized=False,
+    )
+    from src.core.notes import get_note
+    n = get_note(conn, note_id)
+    assert n.content.startswith("заметка с серверов")
+    assert "чёрный ящик" in n.content
+    assert n.raw_caption == "заметка с серверов"
+
+
+@pytest.mark.asyncio
+async def test_ingest_document_text_file_empty_no_caption_is_thin(tmp_path):
+    """A text_file with neither readable body nor caption must be marked
+    thin so it doesn't pollute default search results — corner case for
+    binary garbage saved with a .txt extension or a truly empty file."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    p = tmp_path / "empty.txt"
+    p.write_bytes(b"")
+
+    from src.core.ingest import ingest_document
+    note_id = await ingest_document(
+        conn, jina=fake_jina, owner_id=1,
+        tg_chat_id=-1, tg_message_id=63,
+        local_path=p, original_name="empty.txt",
+        kind="text_file", file_size=0,
+        caption=None, created_at=1, is_oversized=False,
+    )
+    from src.core.notes import get_note
+    n = get_note(conn, note_id)
+    assert n.thin_content is True
+
+
+@pytest.mark.asyncio
+async def test_ingest_document_text_file_short_body_is_not_thin(tmp_path):
+    """A 5-byte note is intentional. Don't mark it thin — the user
+    explicitly chose to send the file."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=1)
+
+    fake_jina = AsyncMock()
+    fake_jina.embed = AsyncMock(return_value=[0.0] * 1024)
+
+    p = tmp_path / "tiny.txt"
+    p.write_text("note", encoding="utf-8")
+
+    from src.core.ingest import ingest_document
+    note_id = await ingest_document(
+        conn, jina=fake_jina, owner_id=1,
+        tg_chat_id=-1, tg_message_id=62,
+        local_path=p, original_name="tiny.txt",
+        kind="text_file", file_size=p.stat().st_size,
+        caption=None, created_at=1, is_oversized=False,
+    )
+    from src.core.notes import get_note
+    n = get_note(conn, note_id)
+    assert n.thin_content is False
+
+
+@pytest.mark.asyncio
 async def test_ingest_oversized_records_metadata_only(tmp_path):
     conn = open_db(str(tmp_path / "x.db"))
     init_schema(conn)

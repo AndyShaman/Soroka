@@ -43,6 +43,10 @@ def detect_kind_from_message(msg) -> str:
             return "docx"
         if name.endswith(".xlsx") or name.endswith(".xls"):
             return "xlsx"
+        # Plain-text source files: read into the body so search hits the
+        # actual content instead of just the filename.
+        if name.endswith(".txt") or name.endswith(".md") or name.endswith(".markdown"):
+            return "text_file"
     if msg.text:
         return detect_kind_from_text(msg.text)
     if msg.caption and (msg.text is None):

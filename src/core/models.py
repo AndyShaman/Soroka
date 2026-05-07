@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 NoteKind = Literal[
     "text", "voice", "youtube", "web", "pdf",
     "docx", "xlsx", "image", "post", "oversized",
+    "text_file",
 ]
 
 SetupStep = Literal[

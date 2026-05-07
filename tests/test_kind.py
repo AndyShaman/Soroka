@@ -48,14 +48,43 @@ def test_detect_url_above_threshold_stays_text():
     assert detect_kind_from_text(eleven_words) == "text"
 
 
-def _msg(*, photo=False, caption=None, text=None):
+def _msg(*, photo=False, caption=None, text=None, document_name=None):
     m = MagicMock()
     m.voice = None
-    m.document = None
+    if document_name is None:
+        m.document = None
+    else:
+        m.document = MagicMock()
+        m.document.file_name = document_name
     m.photo = [MagicMock()] if photo else None
     m.text = text
     m.caption = caption
     return m
+
+
+def test_document_txt_is_text_file():
+    """Plain .txt — extractor will read the body for search."""
+    assert detect_kind_from_message(_msg(document_name="notes.txt")) == "text_file"
+
+
+def test_document_md_is_text_file():
+    assert detect_kind_from_message(_msg(document_name="README.md")) == "text_file"
+
+
+def test_document_markdown_is_text_file():
+    assert detect_kind_from_message(_msg(document_name="spec.markdown")) == "text_file"
+
+
+def test_document_uppercase_extension_is_text_file():
+    """Filename match is lower-cased before suffix check, so the iPhone
+    upload of `Notes.TXT` still classifies correctly."""
+    assert detect_kind_from_message(_msg(document_name="Notes.TXT")) == "text_file"
+
+
+def test_document_pdf_still_pdf_after_text_file_addition():
+    """Regression guard: the new branch sits after pdf/docx/xlsx so it
+    can't shadow them."""
+    assert detect_kind_from_message(_msg(document_name="report.pdf")) == "pdf"
 
 
 def test_photo_with_long_caption_is_post():

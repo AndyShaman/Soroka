@@ -195,7 +195,7 @@ async def _route_and_ingest(ctx, conn, owner, msg, *, is_edit: bool = False) -> 
             is_edit=is_edit,
         )
 
-    if kind in ("pdf", "docx", "xlsx"):
+    if kind in ("pdf", "docx", "xlsx", "text_file"):
         doc = msg.document
         size = doc.file_size or 0
         if is_oversized(size):

@@ -16,6 +16,7 @@ from src.adapters.extractors.pdf import extract_pdf
 from src.adapters.extractors.docx import extract_docx
 from src.adapters.extractors.xlsx import extract_xlsx
 from src.adapters.extractors.ocr import extract_ocr
+from src.adapters.extractors.text import extract_text_file
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +259,19 @@ async def ingest_document(conn: sqlite3.Connection, *, jina, owner_id: int,
         body = extract_xlsx(local_path)
         title = original_name
         is_thin = _is_thin(body or "")
+    elif kind == "text_file":
+        # Plain-text file: caption (if any) is the user's own commentary
+        # and goes first so it leads the snippet; the file body follows.
+        # A short file with real content the user picked deliberately is
+        # not thin — only mark thin when both the file body and the user
+        # caption come back empty (binary garbage / empty .txt), so that
+        # row stays out of default search results.
+        file_body = extract_text_file(local_path) if local_path else ""
+        caption_text = (caption or "").strip()
+        parts = [caption_text, file_body]
+        body = "\n\n".join(p for p in parts if p) or original_name
+        title = original_name
+        is_thin = not file_body and not caption_text
     elif kind == "image":
         ocr = extract_ocr(local_path) or ""
         # Caption (user's own words) is the strongest semantic signal; OCR

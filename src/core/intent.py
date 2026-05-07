@@ -43,6 +43,7 @@ KIND_SYNONYMS: dict[str, list[str]] = {
     "image":   [r"картинк\w+", r"изображени\w+", r"фотк\w+", r"фото",
                 r"скрин\w*", r"скриншот\w*", r"ocr"],
     "text":    [r"заметк\w+", r"мысл\w+"],
+    "text_file": [r"тхт", r"txt", r"мд", r"md", r"маркдаун\w*", r"markdown"],
 }
 
 # Months: nominative / genitive / prepositional (covers «май»/«мая»/«мае»).
