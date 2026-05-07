@@ -1,6 +1,8 @@
 # tests/test_e2e.py
 import pytest
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
+
 from src.core.db import open_db, init_schema
 from src.core.owners import create_or_get_owner, update_owner_field
 from src.core.ingest import ingest_text
@@ -19,10 +21,8 @@ async def test_ingest_then_search_finds_note(tmp_path):
     fake_jina = AsyncMock()
     fake_jina.embed = AsyncMock(return_value=[1.0] + [0.0] * 1023)
     fake_or = AsyncMock()
-    fake_or.complete = AsyncMock(side_effect=[
-        '{"clean_query": "паста", "kind": null}',
-        '[1]',
-    ])
+    # Single rerank call now — intent parsing is local and deterministic.
+    fake_or.complete = AsyncMock(return_value="[1]")
 
     await ingest_text(
         conn, jina=fake_jina, owner_id=1,
@@ -30,8 +30,7 @@ async def test_ingest_then_search_finds_note(tmp_path):
         text="рецепт пасты карбонара", caption=None, created_at=1,
     )
 
-    intent = await parse_intent(fake_or, primary="x", fallback="y",
-                                 query="что я сохранял про пасту")
+    intent = parse_intent("что я сохранял про пасту", tz=ZoneInfo("Europe/Moscow"))
     candidates = await hybrid_search(
         conn, jina=fake_jina, owner_id=1,
         clean_query=intent.clean_query, kind=intent.kind, limit=15,

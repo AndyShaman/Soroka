@@ -1,8 +1,10 @@
 import asyncio
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -16,11 +18,15 @@ from src.core.links import message_link
 from src.core.neighbors import find_similar, get_context, get_by_ids
 from src.core.notes import get_note, list_recent_notes
 from src.core.owners import get_owner
-from src.core.search import hybrid_search, rerank
+from src.core.search import hybrid_search, list_by_filters, rerank
 from src.core.stats import compute_stats
 from src.core.attachments import list_attachments
 
 DB_PATH = Path("/app/data/soroka.db")
+
+
+def _owner_tz() -> ZoneInfo:
+    return ZoneInfo(os.environ.get("SOROKA_OWNER_TZ", "Europe/Moscow"))
 
 
 def _note_to_dict(n) -> dict:
@@ -47,12 +53,20 @@ def _epoch_to_iso(epoch):
 
 
 def _iso_date_to_epoch(date_str, end_of_day: bool):
+    """Parse 'YYYY-MM-DD' in the owner's local timezone and return epoch
+    seconds. `end_of_day=True` returns the start of the *next* day so the
+    caller can use the value as an exclusive upper bound — matching the
+    `created_at < created_before` semantics inside `hybrid_search` /
+    `list_by_filters`. Owner TZ (not UTC) is used so a date like
+    '2026-05-07' means a calendar day for the user, not for Greenwich.
+    """
     if not date_str:
         return None
-    d = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    base = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=_owner_tz())
     if end_of_day:
-        d = d.replace(hour=23, minute=59, second=59)
-    return int(d.timestamp())
+        from datetime import timedelta
+        base = base + timedelta(days=1)
+    return int(base.timestamp())
 
 
 async def tool_search(conn: sqlite3.Connection, owner_id: int,
@@ -65,30 +79,55 @@ async def tool_search(conn: sqlite3.Connection, owner_id: int,
                       created_after: Optional[int] = None,
                       created_before: Optional[int] = None) -> list[dict]:
     """Hybrid search exposed via MCP. Explicit `kind` / `since_days` /
-    `exclude_ids` skip intent detection (saves tokens; agents already
-    know what they want)."""
+    date bounds passed as args win over anything `parse_intent` infers
+    from the free-text query — agents that know exactly what they want
+    shouldn't have their filters second-guessed."""
     owner = get_owner(conn, owner_id)
     jina = JinaClient(api_key=owner.jina_api_key)
     openrouter = OpenRouterClient(api_key=owner.openrouter_key)
 
-    explicit = kind is not None or since_days is not None
-    if explicit:
-        clean_query = query
-        eff_kind = kind
-    else:
-        intent = await parse_intent(
-            openrouter, primary=owner.primary_model,
-            fallback=owner.fallback_model, query=query,
+    intent = parse_intent(query, tz=_owner_tz())
+    eff_kind = kind if kind is not None else intent.kind
+    # since_days=0 from a caller is treated as "no rolling window" (the
+    # rolling-window semantic cannot meaningfully cover zero days; falling
+    # back to intent lets the deterministic parser still apply if it
+    # extracted one).
+    eff_since_days = since_days if (since_days is not None and since_days > 0) else intent.since_days
+    eff_created_after = created_after if created_after is not None else intent.created_after
+    eff_created_before = created_before if created_before is not None else intent.created_before
+    # `clean_query` is what the dense/BM25 path indexes against. When the
+    # parser flagged the query as filter-only, the residual is empty by
+    # design — substituting the raw query back in here resurrects the bug
+    # the parser was meant to fix.
+    clean_query = intent.clean_query
+    has_filter = (
+        eff_kind is not None or eff_since_days is not None
+        or eff_created_after is not None or eff_created_before is not None
+    )
+
+    if intent.list_mode or (has_filter and not clean_query.strip()):
+        notes = list_by_filters(
+            conn, owner_id=owner_id,
+            kind=eff_kind, since_days=eff_since_days,
+            created_after=eff_created_after, created_before=eff_created_before,
+            exclude_ids=exclude_ids or [],
+            include_thin=include_thin,
+            limit=limit, offset=offset,
         )
-        clean_query = intent.clean_query
-        eff_kind = intent.kind
+        return [{
+            "id": n.id, "kind": n.kind, "title": n.title,
+            "content": n.content, "source_url": n.source_url,
+            "ru_summary": getattr(n, "ru_summary", None),
+            "tg_link": message_link(n.tg_chat_id, n.tg_message_id),
+            "created_at": n.created_at,
+        } for n in notes]
 
     candidates = await hybrid_search(
         conn, jina=jina, owner_id=owner_id,
         clean_query=clean_query, kind=eff_kind, limit=15,
-        since_days=since_days, exclude_ids=exclude_ids or [],
+        since_days=eff_since_days, exclude_ids=exclude_ids or [],
         offset=offset, include_thin=include_thin,
-        created_after=created_after, created_before=created_before,
+        created_after=eff_created_after, created_before=eff_created_before,
     )
     reranked = await rerank(
         openrouter, primary=owner.primary_model, fallback=owner.fallback_model,

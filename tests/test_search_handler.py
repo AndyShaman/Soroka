@@ -26,7 +26,7 @@ async def test_search_handler_caches_reranked_pool_of_20(monkeypatch):
     ctx = MagicMock()
     ctx.user_data = {}
     ctx.application.bot_data = {
-        "settings": MagicMock(owner_telegram_id=1),
+        "settings": MagicMock(owner_telegram_id=1, owner_timezone="Europe/Moscow"),
         "conn": MagicMock(),
     }
     ctx.bot.send_chat_action = AsyncMock()
@@ -37,9 +37,11 @@ async def test_search_handler_caches_reranked_pool_of_20(monkeypatch):
     monkeypatch.setattr("src.bot.handlers.search.get_owner", lambda *a, **kw: owner)
     monkeypatch.setattr("src.bot.handlers.search.is_owner", lambda *a, **kw: True)
 
-    intent = MagicMock(clean_query="test query", kind=None)
+    intent = MagicMock(clean_query="test query", kind=None,
+                       since_days=None, created_after=None,
+                       created_before=None, list_mode=False)
     monkeypatch.setattr("src.bot.handlers.search.parse_intent",
-                        AsyncMock(return_value=intent))
+                        lambda *a, **kw: intent)
     monkeypatch.setattr("src.bot.handlers.search.hybrid_search",
                         AsyncMock(return_value=pool))
     rerank_mock = AsyncMock(return_value=pool)

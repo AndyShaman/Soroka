@@ -147,7 +147,7 @@ async def hybrid_search(conn: sqlite3.Connection, *, jina, owner_id: int,
                 continue
         if created_after is not None and n.created_at < created_after:
             continue
-        if created_before is not None and n.created_at > created_before:
+        if created_before is not None and n.created_at >= created_before:
             continue
         notes.append(n)
 
@@ -179,11 +179,59 @@ def _bm25(conn: sqlite3.Connection, owner_id: int,
         sql += " AND n.created_at >= ?"
         params.append(created_after)
     if created_before is not None:
-        sql += " AND n.created_at <= ?"
+        sql += " AND n.created_at < ?"
         params.append(created_before)
     sql += " ORDER BY rank LIMIT ?"
     params.append(k)
     return [row[0] for row in conn.execute(sql, params).fetchall()]
+
+
+def list_by_filters(conn: sqlite3.Connection, *, owner_id: int,
+                    kind: Optional[str] = None,
+                    since_days: Optional[int] = None,
+                    created_after: Optional[int] = None,
+                    created_before: Optional[int] = None,
+                    exclude_ids: Optional[list[int]] = None,
+                    include_thin: bool = False,
+                    limit: int = 20,
+                    offset: int = 0) -> list[Note]:
+    """Filter-only listing for queries that have no semantic component
+    («все голосовые», «что было в мае»). Bypasses BM25/dense/rerank
+    because there is nothing to rank against — just sort by recency.
+
+    Boundary semantics match `hybrid_search`: `created_after` inclusive,
+    `created_before` exclusive (start of next period).
+    """
+    sql = """SELECT id FROM notes
+             WHERE owner_id = ? AND deleted_at IS NULL"""
+    params: list = [owner_id]
+    if kind:
+        sql += " AND kind = ?"
+        params.append(kind)
+    if not include_thin:
+        sql += " AND COALESCE(thin_content, 0) = 0"
+    if since_days is not None:
+        sql += " AND created_at >= ?"
+        params.append(int(time.time()) - since_days * 86400)
+    if created_after is not None:
+        sql += " AND created_at >= ?"
+        params.append(created_after)
+    if created_before is not None:
+        sql += " AND created_at < ?"
+        params.append(created_before)
+    if exclude_ids:
+        placeholders = ",".join("?" * len(exclude_ids))
+        sql += f" AND id NOT IN ({placeholders})"
+        params.extend(exclude_ids)
+    sql += " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    ids = [row[0] for row in conn.execute(sql, params).fetchall()]
+    notes: list[Note] = []
+    for nid in ids:
+        n = get_note(conn, nid)
+        if n is not None:
+            notes.append(n)
+    return notes
 
 
 def _sanitize_fts(query: str) -> str:

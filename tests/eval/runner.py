@@ -87,10 +87,8 @@ async def run_query(
     """Take a raw user query and return the ranked top-K note IDs that
     the bot would actually show. Pipeline: parse_intent ->
     hybrid_search -> rerank. Empty result returns []."""
-    intent = await parse_intent(
-        openrouter, primary=primary_model, fallback=fallback_model,
-        query=raw_query,
-    )
+    from zoneinfo import ZoneInfo
+    intent = parse_intent(raw_query, tz=ZoneInfo("Europe/Moscow"))
     candidates = await hybrid_search(
         conn, jina=jina, owner_id=OWNER_ID,
         clean_query=intent.clean_query, kind=intent.kind, limit=HYBRID_LIMIT,

@@ -1,3 +1,6 @@
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from src.bot.handlers._search_format import (
     _clean_title,
     _clean_snippet,
@@ -7,6 +10,13 @@ from src.bot.handlers._search_format import (
     format_hit,
 )
 from src.core.models import Note
+
+TZ = ZoneInfo("Europe/Moscow")
+# 2026-05-07 14:32 MSK — the timestamp threaded into every fixture so the
+# rendered header (`📌 [kind] · 07 мая 2026, 14:32`) is identical across
+# tests and stays human-recognisable when reading failure diffs.
+TS = int(datetime(2026, 5, 7, 14, 32, tzinfo=TZ).timestamp())
+HEADER_DATE = " · 07 мая 2026, 14:32"
 
 
 # ---------- _clean_title ---------------------------------------------------
@@ -47,9 +57,6 @@ def test_clean_title_keeps_normal_title():
 # ---------- _clean_snippet -------------------------------------------------
 
 def test_clean_snippet_collapses_ocr_noise():
-    """Tesseract output for stylized images often looks like
-    'к\\n-\\n=\\n\\nextreme\\n\\nBag OT клещей' — orphan symbols and
-    blank lines should be hidden in the snippet, not stored differently."""
     raw = "к\n-\n=\n\nextreme\n\nBag OT клещей\n\nдля обработки\nодежды"
     cleaned = _clean_snippet(raw)
     assert cleaned == "extreme Bag OT клещей для обработки одежды"
@@ -62,7 +69,6 @@ def test_clean_snippet_keeps_normal_text():
 
 
 def test_clean_snippet_strips_leading_bullet_emoji():
-    """Fix #5 — bullet-emojis at start of a line are formatting, not content."""
     cleaned = _clean_snippet("⚪ Tencent Cloud is great\n🔵 second line")
     assert cleaned == "Tencent Cloud is great second line"
 
@@ -70,23 +76,19 @@ def test_clean_snippet_strips_leading_bullet_emoji():
 # ---------- _truncate_smart ------------------------------------------------
 
 def test_truncate_smart_short_text_unchanged():
-    """Fix #4 — short text (<= limit) returned verbatim."""
     assert _truncate_smart("hello world", limit=200) == "hello world"
 
 
 def test_truncate_smart_breaks_on_word_boundary():
-    """Fix #4 — never split a word; cut at the last whitespace before limit."""
     text = "раз два три четыре пять шесть семь восемь девять автор книги"
-    # Position past the start of "книги" so cutting at limit lands inside it.
-    limit = text.index("книги") + 3  # mid-word "книг"
+    limit = text.index("книги") + 3
     out = _truncate_smart(text, limit=limit)
     assert out.endswith("…")
-    assert "книг" not in out  # no mid-word "книг…"
+    assert "книг" not in out
     assert out.rstrip("…").rstrip().endswith("автор")
 
 
 def test_truncate_smart_does_not_split_url():
-    """Fix #4 — if cut would land inside a URL, drop the URL entirely."""
     text = "see https://github.com/warpdotdev/warp/issues/123 for more"
     out = _truncate_smart(text, limit=30)
     assert out.endswith("…")
@@ -102,87 +104,78 @@ def test_format_hit_two_lines_when_body_empty():
     note = Note(
         id=1, owner_id=1, tg_chat_id=-1001, tg_message_id=1,
         kind="image", title=None, content="",
-        created_at=1,
+        created_at=TS,
     )
-    out = format_hit(note)
+    out = format_hit(note, TZ)
     lines = out.splitlines()
-    assert lines == ["📌 [image]", "https://t.me/c/1/1"]
+    assert lines == [f"📌 [image]{HEADER_DATE}", "https://t.me/c/1/1"]
 
 
-def test_format_hit_header_is_kind_only():
-    """Header carries the kind tag only — no title, no '(без подписи)'.
-    User judges relevance from the body row, not from a derived heading."""
+def test_format_hit_header_includes_date_and_drops_junk_title():
     note = Note(
         id=2, owner_id=1, tg_chat_id=-100, tg_message_id=484,
         kind="image", title="photo_AQADlhJrG72ZqEt-.jpg",
         content="к\n-\n=\n\nextreme\n\nBag OT клещей",
-        created_at=1,
+        created_at=TS,
     )
-    out = format_hit(note)
+    out = format_hit(note, TZ)
     lines = out.splitlines()
-    assert lines[0] == "📌 [image]"
+    assert lines[0] == f"📌 [image]{HEADER_DATE}"
     assert "photo_AQADlhJrG72ZqEt" not in out
     assert "(без подписи)" not in out
     assert "extreme" in out
 
 
 def test_format_hit_link_directly_after_header():
-    """Tag → link → text. Link must be on the second line so the user sees
-    it immediately, before reading the body."""
     note = Note(
         id=3, owner_id=1, tg_chat_id=-1001, tg_message_id=10,
         kind="post", title="POV: что-то",
         content="Содержимое поста.",
-        created_at=1,
+        created_at=TS,
     )
-    out = format_hit(note)
+    out = format_hit(note, TZ)
     lines = out.splitlines()
     assert len(lines) == 3
-    assert lines[0] == "📌 [post]"
+    assert lines[0] == f"📌 [post]{HEADER_DATE}"
     assert lines[1] == "https://t.me/c/1/10"
     assert lines[2] == "Содержимое поста."
 
 
 def test_format_hit_shows_full_body_within_cap():
-    """A 600-char body fits under the 700-char cap and is shown verbatim."""
-    body = "слово " * 100  # 600 chars
+    body = "слово " * 100
     note = Note(
         id=4, owner_id=1, tg_chat_id=-100, tg_message_id=20,
         kind="text", title=None, content=body.strip(),
-        created_at=1,
+        created_at=TS,
     )
-    out = format_hit(note)
+    out = format_hit(note, TZ)
     assert "…" not in out
     assert out.endswith(body.strip())
 
 
 def test_format_hit_keeps_in_text_emoji():
-    """Only LEADING bullet emojis are stripped; emojis inside sentences
-    must survive."""
     note = Note(
         id=5, owner_id=1, tg_chat_id=-100, tg_message_id=30,
         kind="post", title="Cloud news",
         content="Cloud is 🔵 awesome",
-        created_at=1,
+        created_at=TS,
     )
-    out = format_hit(note)
+    out = format_hit(note, TZ)
     assert "🔵" in out
 
 
 def test_format_hit_renders_ru_summary_between_link_and_body():
-    """Foreign-language URL captures get a Russian summary row inserted
-    after the source-url row and before the article body."""
     note = Note(
         id=6, owner_id=1, tg_chat_id=-1001, tg_message_id=40,
         kind="web", title="Some English title",
         content="This is the English article body about LLMs.",
         source_url="https://example.com/x",
-        created_at=1,
+        created_at=TS,
         ru_summary="Статья про большие языковые модели.",
     )
-    out = format_hit(note)
+    out = format_hit(note, TZ)
     lines = out.splitlines()
-    assert lines[0] == "📌 [web]"
+    assert lines[0] == f"📌 [web]{HEADER_DATE}"
     assert lines[1] == "https://t.me/c/1/40"
     assert lines[2] == "https://example.com/x"
     assert lines[3] == "🇷🇺 Статья про большие языковые модели."
@@ -190,41 +183,52 @@ def test_format_hit_renders_ru_summary_between_link_and_body():
 
 
 def test_format_hit_omits_ru_summary_row_when_absent():
-    """Notes without ru_summary keep the original 3-line shape."""
     note = Note(
         id=7, owner_id=1, tg_chat_id=-1001, tg_message_id=41,
         kind="text", title=None, content="Обычная заметка.",
-        created_at=1,
+        created_at=TS,
     )
-    out = format_hit(note)
+    out = format_hit(note, TZ)
     lines = out.splitlines()
     assert "🇷🇺" not in out
     assert len(lines) == 3
 
 
 def test_format_hit_omits_ru_summary_row_when_blank():
-    """Whitespace-only ru_summary is treated as empty — no row emitted."""
     note = Note(
         id=8, owner_id=1, tg_chat_id=-1001, tg_message_id=42,
         kind="web", title=None, content="body",
-        created_at=1, ru_summary="   ",
+        created_at=TS, ru_summary="   ",
     )
-    out = format_hit(note)
+    out = format_hit(note, TZ)
     assert "🇷🇺" not in out
+
+
+def test_format_hit_renders_date_in_owner_timezone():
+    """Same epoch displayed in two zones gives different wall-clock —
+    `tz` is the only knob that controls it."""
+    nyc_tz = ZoneInfo("America/New_York")
+    note = Note(
+        id=9, owner_id=1, tg_chat_id=-1001, tg_message_id=99,
+        kind="text", title=None, content="x", created_at=TS,
+    )
+    msk_first = format_hit(note, TZ).splitlines()[0]
+    nyc_first = format_hit(note, nyc_tz).splitlines()[0]
+    assert msk_first != nyc_first
+    assert "14:32" in msk_first
+    # 14:32 MSK is 07:32 EDT on 2026-05-07.
+    assert "07:32" in nyc_first
 
 
 # ---------- _format_source_url --------------------------------------------
 
 def test_format_source_url_returns_empty_for_none_or_blank():
-    """Notes without an external URL produce no source-url row."""
     assert _format_source_url(None, "https://t.me/c/1/1") == ""
     assert _format_source_url("", "https://t.me/c/1/1") == ""
     assert _format_source_url("   ", "https://t.me/c/1/1") == ""
 
 
 def test_format_source_url_skips_when_equals_message_link():
-    """If source_url is the Telegram message link itself (already shown
-    as line 2), don't echo it again."""
     link = "https://t.me/c/1001/55"
     assert _format_source_url(link, link) == ""
 
@@ -235,9 +239,7 @@ def test_format_source_url_returns_url_verbatim_when_short():
 
 
 def test_format_source_url_truncates_pathological_query():
-    """A URL longer than _SOURCE_URL_MAX is hard-clipped with an ellipsis
-    so a long ?utm_… tail can't blow the per-card budget."""
-    long_url = "https://example.com/path?" + "x=1&" * 80  # >>110 chars
+    long_url = "https://example.com/path?" + "x=1&" * 80
     out = _format_source_url(long_url, "https://t.me/c/1/1")
     assert len(out) <= _SOURCE_URL_MAX
     assert out.endswith("…")
@@ -247,16 +249,15 @@ def test_format_source_url_truncates_pathological_query():
 # ---------- format_hit + source_url row -----------------------------------
 
 def test_format_hit_inserts_source_url_between_link_and_summary():
-    """Order is: header, telegram link, source_url, ru_summary, body."""
     note = Note(
         id=10, owner_id=1, tg_chat_id=-1001, tg_message_id=50,
         kind="web", title="GitHub repo", content="English article body.",
         source_url="https://github.com/foo/bar",
         ru_summary="Описание репозитория.",
-        created_at=1,
+        created_at=TS,
     )
-    lines = format_hit(note).splitlines()
-    assert lines[0] == "📌 [web]"
+    lines = format_hit(note, TZ).splitlines()
+    assert lines[0] == f"📌 [web]{HEADER_DATE}"
     assert lines[1] == "https://t.me/c/1/50"
     assert lines[2] == "https://github.com/foo/bar"
     assert lines[3] == "🇷🇺 Описание репозитория."
@@ -264,17 +265,15 @@ def test_format_hit_inserts_source_url_between_link_and_summary():
 
 
 def test_format_hit_source_url_row_without_summary():
-    """Russian-language URL captures still get a source_url row even
-    though there's no ru_summary."""
     note = Note(
         id=11, owner_id=1, tg_chat_id=-1001, tg_message_id=51,
         kind="web", title=None, content="Текст статьи на русском.",
         source_url="https://habr.com/ru/articles/12345/",
-        created_at=1,
+        created_at=TS,
     )
-    lines = format_hit(note).splitlines()
+    lines = format_hit(note, TZ).splitlines()
     assert lines == [
-        "📌 [web]",
+        f"📌 [web]{HEADER_DATE}",
         "https://t.me/c/1/51",
         "https://habr.com/ru/articles/12345/",
         "Текст статьи на русском.",
@@ -282,26 +281,22 @@ def test_format_hit_source_url_row_without_summary():
 
 
 def test_format_hit_omits_source_url_when_equals_message_link():
-    """Defensive: if source_url somehow coincides with the message link,
-    we don't print the same URL twice."""
     note = Note(
         id=12, owner_id=1, tg_chat_id=-1001, tg_message_id=52,
         kind="web", title=None, content="body",
         source_url="https://t.me/c/1/52",
-        created_at=1,
+        created_at=TS,
     )
-    out = format_hit(note)
-    # The telegram link appears exactly once as line 2; no second copy.
+    out = format_hit(note, TZ)
     assert out.count("https://t.me/c/1/52") == 1
 
 
 def test_format_hit_no_source_url_row_when_field_missing():
-    """Notes without source_url keep the original 3-line shape."""
     note = Note(
         id=13, owner_id=1, tg_chat_id=-1001, tg_message_id=53,
         kind="text", title=None, content="Просто текст.",
-        created_at=1,
+        created_at=TS,
     )
-    lines = format_hit(note).splitlines()
+    lines = format_hit(note, TZ).splitlines()
     assert len(lines) == 3
-    assert lines == ["📌 [text]", "https://t.me/c/1/53", "Просто текст."]
+    assert lines == [f"📌 [text]{HEADER_DATE}", "https://t.me/c/1/53", "Просто текст."]

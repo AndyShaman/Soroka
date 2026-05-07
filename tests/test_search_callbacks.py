@@ -14,11 +14,25 @@ def _note(nid: int) -> Note:
                 source_url=None, raw_caption=None, created_at=1000)
 
 
+_BASE_STATE = {
+    "kind": None,
+    "since_days": None,
+    "created_after": None,
+    "created_before": None,
+    "list_mode": False,
+    "excluded_ids": [],
+}
+
+
+def _state(**overrides) -> dict:
+    return {**_BASE_STATE, **overrides}
+
+
 def _make_ctx(state: dict):
     ctx = MagicMock()
     ctx.user_data = {"last_search": state}
-    ctx.application.bot_data = {"settings": MagicMock(owner_telegram_id=1),
-                                  "conn": MagicMock()}
+    settings = MagicMock(owner_telegram_id=1, owner_timezone="Europe/Moscow")
+    ctx.application.bot_data = {"settings": settings, "conn": MagicMock()}
     ctx.bot.send_chat_action = AsyncMock()
     return ctx
 
@@ -37,8 +51,7 @@ def _make_callback_update(callback_data: str):
 async def test_toggle_period_shows_searching_indicator_first(monkeypatch):
     """Slow-path must edit the message to '🔍 Ищу…' BEFORE the heavy work,
     then again with the result. Two edits in order."""
-    state = {"query": "x", "since_days": None, "excluded_ids": [],
-             "pool": [], "shown_ids": [], "cursor": 0}
+    state = _state(query="x", pool=[], shown_ids=[], cursor=0)
     ctx = _make_ctx(state)
     update = _make_callback_update("search:period")
 
@@ -61,8 +74,7 @@ async def test_toggle_period_shows_searching_indicator_first(monkeypatch):
 @pytest.mark.asyncio
 async def test_start_refine_no_indicator_just_prompt():
     """Refine doesn't run search yet — it asks the user for input. No indicator."""
-    state = {"query": "x", "since_days": None, "excluded_ids": [],
-             "pool": [], "shown_ids": [], "cursor": 0}
+    state = _state(query="x", pool=[], shown_ids=[], cursor=0)
     ctx = _make_ctx(state)
     update = _make_callback_update("search:refine")
 
@@ -81,8 +93,7 @@ async def test_guard_swallows_stale_callback_query():
     from telegram.error import BadRequest
     from src.bot.handlers.search_callbacks import _guard
 
-    state = {"query": "x", "since_days": None, "excluded_ids": [],
-             "pool": [], "shown_ids": [], "cursor": 0}
+    state = _state(query="x", pool=[], shown_ids=[], cursor=0)
     ctx = _make_ctx(state)
     update = _make_callback_update("search:next")
     update.callback_query.answer = AsyncMock(
@@ -98,8 +109,7 @@ async def test_guard_swallows_stale_callback_query():
 async def test_next_page_serves_from_pool_without_rerank():
     """Fast-path: Ещё 5 takes the next slice from the cached pool — no LLM."""
     pool = [_note(i) for i in range(1, 21)]
-    state = {"query": "x", "since_days": None, "excluded_ids": [],
-             "pool": pool, "shown_ids": [1, 2, 3, 4, 5], "cursor": 5}
+    state = _state(query="x", pool=pool, shown_ids=[1, 2, 3, 4, 5], cursor=5)
     ctx = _make_ctx(state)
     update = _make_callback_update("search:next")
 
@@ -114,8 +124,8 @@ async def test_next_page_serves_from_pool_without_rerank():
 async def test_next_page_pool_exhausted_shows_message():
     """When cursor reaches the end of the pool, surface a hint and keep buttons."""
     pool = [_note(i) for i in range(1, 21)]
-    state = {"query": "x", "since_days": None, "excluded_ids": [],
-             "pool": pool, "shown_ids": [16, 17, 18, 19, 20], "cursor": 20}
+    state = _state(query="x", pool=pool,
+                   shown_ids=[16, 17, 18, 19, 20], cursor=20)
     ctx = _make_ctx(state)
     update = _make_callback_update("search:next")
 
@@ -130,8 +140,7 @@ async def test_next_page_pool_exhausted_shows_message():
 async def test_exclude_current_drops_shown_from_pool():
     """Fast-path: Не то removes shown_ids from pool, advances cursor accordingly."""
     pool = [_note(i) for i in range(1, 21)]
-    state = {"query": "x", "since_days": None, "excluded_ids": [],
-             "pool": pool, "shown_ids": [1, 2, 3, 4, 5], "cursor": 5}
+    state = _state(query="x", pool=pool, shown_ids=[1, 2, 3, 4, 5], cursor=5)
     ctx = _make_ctx(state)
     update = _make_callback_update("search:exclude")
 

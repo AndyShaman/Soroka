@@ -5,13 +5,28 @@ re-render after period change / exclusion) both display the same kind
 of card. Keeping the implementation here means the two handlers can't
 silently drift apart.
 
-Public entry point: ``format_hit(note)``.
+Public entry point: ``format_hit(note, tz)``.
 The other helpers are exposed only for tests.
 """
 
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from src.core.links import message_link
+
+# Genitive-case month names — what reads naturally after a day number
+# in Russian («3 мая 2026», not «3 май 2026»).
+_RU_MONTHS_GENITIVE = {
+    1: "января", 2: "февраля", 3: "марта", 4: "апреля",
+    5: "мая",    6: "июня",    7: "июля",  8: "августа",
+    9: "сентября", 10: "октября", 11: "ноября", 12: "декабря",
+}
+
+
+def _format_created_at(epoch: int, tz: ZoneInfo) -> str:
+    dt = datetime.fromtimestamp(epoch, tz=tz)
+    return f"{dt.day:02d} {_RU_MONTHS_GENITIVE[dt.month]} {dt.year}, {dt:%H:%M}"
 
 # Telegram file-id-style titles like "photo_AQADlhJrG72ZqEt-.jpg" or
 # "document_42.pdf" — these are placeholders we generated when no caption
@@ -188,21 +203,21 @@ def _format_source_url(raw: str | None, message_link_url: str) -> str:
     return url
 
 
-def format_hit(note) -> str:
+def format_hit(note, tz: ZoneInfo) -> str:
     """Render one search-result card.
 
-    Format: kind tag, Telegram link, optional source URL (when the post
-    pointed to an external page), optional Russian summary (for foreign-
-    language URL captures), full text body. The source URL row helps the
-    reader recognise where a captured link points without scrolling
-    through the body — important when the body is the extracted article
-    text and never repeats the URL itself.
+    Format: kind tag + original message timestamp, Telegram link, optional
+    source URL (when the post pointed to an external page), optional
+    Russian summary (for foreign-language URL captures), full text body.
+    The timestamp gives the reader an anchor — useful when the same topic
+    spans many entries; without it, day/month-bounded queries returned
+    cards that all looked equally fresh.
 
     Per-card body is capped so five cards comfortably fit Telegram's
     4096-char message limit. The cap shrinks when a summary row eats
     into that budget."""
     link = message_link(note.tg_chat_id, note.tg_message_id)
-    header = f"📌 [{note.kind}]"
+    header = f"📌 [{note.kind}] · {_format_created_at(note.created_at, tz)}"
     source_url_row = _format_source_url(getattr(note, "source_url", None), link)
     ru_summary = (getattr(note, "ru_summary", None) or "").strip()
     body_cap = _BODY_CAP_WITH_SUMMARY if ru_summary else _BODY_CAP_DEFAULT
