@@ -1,6 +1,5 @@
 """Buffering of Telegram media-group messages so one forwarded post with N
-photos lands as exactly one note. See
-docs/superpowers/specs/2026-05-05-media-groups-ingest-design.md."""
+photos lands as exactly one note."""
 import asyncio
 import logging
 from collections import defaultdict

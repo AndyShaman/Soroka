@@ -6,8 +6,6 @@ thought but Telegram delivers them as two independent channel posts.
 This module provides the mechanic for mutually injecting each side's
 text into the other's FTS row and Jina embedding so search can hop
 between them by either side's vocabulary.
-
-Spec: docs/superpowers/specs/2026-05-06-comment-forward-pair-design.md
 """
 from __future__ import annotations
 

@@ -1,5 +1,5 @@
 """Unit tests for src/core/sibling_index — the comment+forward pair
-indexing helper. Spec: docs/superpowers/specs/2026-05-06-comment-forward-pair-design.md."""
+indexing helper."""
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

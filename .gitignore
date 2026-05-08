@@ -24,5 +24,9 @@ keys.txt
 premortem-report-*.html
 premortem-transcript-*.md
 how_to.md
+FAQ.html
 
-docs/superpowers/handoff-*
+# Private working artefacts — not for the public repo.
+docs/
+memory/
+.claude/

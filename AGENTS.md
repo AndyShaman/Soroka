@@ -16,7 +16,7 @@ Those are collected later via the bot's `/start` wizard, in Telegram.
 
 If `ssh "$VPS" 'echo ok'` fails (password prompt or permission denied), stop
 and tell the user to set up an SSH key first — either `ssh-copy-id "$VPS"` or
-the [3x-ui-skill Part 1](https://github.com/AndyShaman/3x-ui-skill) (server
+the [vps-setup-skill](https://github.com/AndyShaman/vps-setup-skill) (server
 hardening flow that creates a non-root user with a key).
 
 ## Deployment
