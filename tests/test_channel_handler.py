@@ -89,6 +89,66 @@ async def test_channel_handler_ingests_normal_text(tmp_path):
         routed.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_channel_handler_skips_self_forward_probe(tmp_path):
+    """During /sync, probes are forwarded back into the same inbox
+    channel and immediately deleted. Without this filter the bot would
+    re-ingest its own probe as a duplicate note before the delete
+    arrives. Detect via forward_origin.chat.id == msg.chat.id."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=42)
+    advance_setup_step(conn, 42, "done")
+    update_owner_field(conn, 42, "inbox_chat_id", -1001234)
+
+    ctx = _make_ctx(conn)
+    update = MagicMock()
+    update.edited_channel_post = None
+    post = update.channel_post
+    post.chat.id = -1001234
+    post.message_id = 9999
+    post.text = "probe content"
+    post.caption = None
+    post.media_group_id = None
+    post.forward_origin = MagicMock()
+    post.forward_origin.chat = MagicMock(id=-1001234)  # same channel = self-forward
+    post.forward_from_chat = MagicMock(id=-1001234)
+
+    with patch("src.bot.handlers.channel._route_and_ingest", new=AsyncMock()) as routed:
+        await channel_handler(update, ctx)
+        routed.assert_not_called()
+    ctx.bot.set_message_reaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_channel_handler_ingests_external_forward(tmp_path):
+    """Regression guard: forwards from OTHER channels must still be
+    ingested as normal. Only same-channel self-forwards (sync probes)
+    are skipped."""
+    conn = open_db(str(tmp_path / "x.db"))
+    init_schema(conn)
+    create_or_get_owner(conn, telegram_id=42)
+    advance_setup_step(conn, 42, "done")
+    update_owner_field(conn, 42, "inbox_chat_id", -1001234)
+
+    ctx = _make_ctx(conn)
+    update = MagicMock()
+    update.edited_channel_post = None
+    post = update.channel_post
+    post.chat.id = -1001234
+    post.message_id = 100
+    post.text = "interesting article from another channel"
+    post.caption = None
+    post.media_group_id = None
+    post.forward_origin = MagicMock()
+    post.forward_origin.chat = MagicMock(id=-1009999)  # different channel
+    post.forward_from_chat = MagicMock(id=-1009999)
+
+    with patch("src.bot.handlers.channel._route_and_ingest", new=AsyncMock()) as routed:
+        await channel_handler(update, ctx)
+        routed.assert_awaited_once()
+
+
 def test_safe_filename_keeps_normal_name():
     assert _safe_filename("report.pdf", "abc") == "report.pdf"
 

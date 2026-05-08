@@ -84,7 +84,11 @@ async def test_probe_returns_deleted_on_forward_not_found():
 
 
 @pytest.mark.asyncio
-async def test_probe_returns_exists_and_cleans_up_forward():
+async def test_probe_forwards_to_source_channel_not_dm():
+    """Probe target is the inbox channel itself, not the owner's DM —
+    keeps the flicker out of the user's chat. The source channel is
+    already an active surface (bot is admin, ingests there), so a
+    100ms forward+delete there is invisible enough."""
     bot = MagicMock()
     forwarded = MagicMock(message_id=999)
     bot.forward_message = AsyncMock(return_value=forwarded)
@@ -92,10 +96,16 @@ async def test_probe_returns_exists_and_cleans_up_forward():
     note = MagicMock(tg_chat_id=-1001234, tg_message_id=42)
 
     result = await sync_deleted.probe_message_exists(
-        bot, owner_telegram_id=42, note=note,
+        bot, owner_telegram_id=777, note=note,
     )
     assert result == "exists"
-    bot.delete_message.assert_awaited_once_with(chat_id=42, message_id=999)
+    # forward target must be the source channel, not the owner's DM (777)
+    fwd_kwargs = bot.forward_message.await_args.kwargs
+    assert fwd_kwargs["chat_id"] == -1001234
+    assert fwd_kwargs["from_chat_id"] == -1001234
+    bot.delete_message.assert_awaited_once_with(
+        chat_id=-1001234, message_id=999,
+    )
 
 
 @pytest.mark.asyncio

@@ -41,8 +41,19 @@ _DELETED_MARKERS = (
 
 
 async def probe_message_exists(bot, *, owner_telegram_id: int, note) -> ProbeResult:
-    """Forward `note` to the owner's DM as a probe, then immediately
-    delete the forwarded copy so the owner doesn't see clutter.
+    """Forward `note` back into its source channel as a probe, then
+    immediately delete the forwarded copy.
+
+    Probe target is the source channel itself, not the owner's DM:
+    forward+delete in DM produced a visible "flicker" the owner could
+    not avoid seeing (each probe = one DM message appearing for
+    ~100 ms then vanishing). The source channel is already an active
+    surface (bot is admin, ingests posts there) and the owner reads
+    notes via the bot's DM, not the channel — so transient probe
+    posts in the channel are invisible during normal use.
+
+    `owner_telegram_id` is kept in the signature for backward compat
+    with callers; it is no longer used by the probe itself.
 
     Returns:
       - "exists" if the forward succeeded (delete is best-effort).
@@ -51,7 +62,7 @@ async def probe_message_exists(bot, *, owner_telegram_id: int, note) -> ProbeRes
     """
     try:
         forwarded = await bot.forward_message(
-            chat_id=owner_telegram_id,
+            chat_id=note.tg_chat_id,
             from_chat_id=note.tg_chat_id,
             message_id=note.tg_message_id,
             disable_notification=True,
@@ -68,7 +79,7 @@ async def probe_message_exists(bot, *, owner_telegram_id: int, note) -> ProbeRes
 
     try:
         await bot.delete_message(
-            chat_id=owner_telegram_id,
+            chat_id=note.tg_chat_id,
             message_id=forwarded.message_id,
         )
     except TelegramError:

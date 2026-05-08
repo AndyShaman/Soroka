@@ -58,6 +58,21 @@ async def channel_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     if owner.inbox_chat_id is None or msg.chat.id != owner.inbox_chat_id:
         return
 
+    # Self-forward filter: /sync probes work by forwarding a channel post
+    # back into the same channel (then deleting the copy ~100ms later).
+    # Without this guard the bot would re-ingest its own probe before the
+    # delete arrives, creating a duplicate note. forward_origin.chat.id
+    # equal to the current chat id reliably identifies a self-forward;
+    # forward_from_chat is a legacy fallback for older Bot API payloads.
+    fwd_origin = getattr(msg, "forward_origin", None)
+    if fwd_origin is not None:
+        origin_chat = getattr(fwd_origin, "chat", None)
+        if origin_chat is not None and origin_chat.id == msg.chat.id:
+            return
+    fwd_chat = getattr(msg, "forward_from_chat", None)
+    if fwd_chat is not None and fwd_chat.id == msg.chat.id:
+        return
+
     text = msg.text or msg.caption or ""
     if text.startswith("/"):
         return  # commands meant for the owner, not knowledge-base content
