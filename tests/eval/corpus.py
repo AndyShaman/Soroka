@@ -588,7 +588,7 @@ NOTES = [
         "content": (
             "Запустил Soroka — телеграм-бот для личной базы знаний. "
             "Деплой одной командой, инструкция в репо: "
-            "https://github.com/AndyShaman/soroka. Подробности в моём "
+            "https://github.com/AndyShaman/Soroka. Подробности в моём "
             "канале: https://t.me/handler_ai. Использую SQLite + sqlite-vec "
             "плюс Jina embeddings для поиска."
         ),

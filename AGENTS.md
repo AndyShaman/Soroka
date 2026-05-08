@@ -25,7 +25,7 @@ The installer runs **on the VPS itself** (not from the local machine). Drive it
 through SSH with the non-interactive flags:
 
 ```bash
-ssh "$VPS" "git clone https://github.com/AndyShaman/soroka.git \
+ssh "$VPS" "git clone https://github.com/AndyShaman/Soroka.git \
   && cd soroka \
   && ./bin/install --tg-token '$TELEGRAM_BOT_TOKEN' --owner-id '$OWNER_TELEGRAM_ID'"
 ```

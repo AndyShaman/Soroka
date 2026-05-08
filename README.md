@@ -10,11 +10,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/AndyShaman/soroka/blob/main/LICENSE"><img src="https://img.shields.io/github/license/AndyShaman/soroka?style=flat-square&color=green" alt="License"></a>
+  <a href="https://github.com/AndyShaman/Soroka/blob/main/LICENSE"><img src="https://img.shields.io/github/license/AndyShaman/Soroka?style=flat-square&color=green" alt="License"></a>
   <img src="https://img.shields.io/badge/python-3.12+-blue?style=flat-square&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/MCP-compatible-8A2BE2?style=flat-square" alt="MCP">
   <img src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20vec-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite">
-  <a href="https://github.com/AndyShaman/soroka/stargazers"><img src="https://img.shields.io/github/stars/AndyShaman/soroka?style=flat-square&color=yellow" alt="Stars"></a>
+  <a href="https://github.com/AndyShaman/Soroka/stargazers"><img src="https://img.shields.io/github/stars/AndyShaman/Soroka?style=flat-square&color=yellow" alt="Stars"></a>
 </p>
 
 <p align="center">
@@ -71,7 +71,7 @@ curl -fsSL https://raw.githubusercontent.com/AndyShaman/vps-setup-skill/main/ins
 Зайди на VPS любым удобным способом и выполни прямо там:
 
 ```bash
-git clone https://github.com/AndyShaman/soroka.git
+git clone https://github.com/AndyShaman/Soroka.git
 cd soroka
 ./bin/install
 ```
