@@ -71,7 +71,7 @@ curl -fsSL https://raw.githubusercontent.com/AndyShaman/vps-setup-skill/main/ins
 Зайди на VPS любым удобным способом и выполни прямо там:
 
 ```bash
-git clone https://github.com/AndyShaman/Soroka.git
+git clone https://github.com/AndyShaman/Soroka.git soroka
 cd soroka
 ./bin/install
 ```
