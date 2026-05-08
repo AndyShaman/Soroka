@@ -1,9 +1,34 @@
-# 🐦 Soroka
+<h1 align="center">Soroka</h1>
 
-Telegram-бот, который превращает «Избранное» в персональную базу знаний.
-Ты форвардишь в приватный канал что угодно — голос, ссылки, статьи, документы.
-Soroka индексирует и хранит. Чтобы найти — пишешь боту в DM.
-Возвращает оригинальные ссылки и файлы, не пересказы.
+<p align="center">
+  <img src="assets/logo.png" alt="Soroka logo" width="200">
+</p>
+
+<p align="center">
+  Telegram-бот, который превращает «Избранное» в персональную базу знаний.<br>
+  Форвардишь в приватный канал — ищешь у бота в DM. Возвращает оригиналы, не пересказы.
+</p>
+
+<p align="center">
+  <a href="https://github.com/AndyShaman/soroka/blob/main/LICENSE"><img src="https://img.shields.io/github/license/AndyShaman/soroka?style=flat-square&color=green" alt="License"></a>
+  <img src="https://img.shields.io/badge/python-3.12+-blue?style=flat-square&logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/MCP-compatible-8A2BE2?style=flat-square" alt="MCP">
+  <img src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20vec-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite">
+  <a href="https://github.com/AndyShaman/soroka/stargazers"><img src="https://img.shields.io/github/stars/AndyShaman/soroka?style=flat-square&color=yellow" alt="Stars"></a>
+</p>
+
+<p align="center">
+  <a href="https://t.me/AI_Handler"><img src="https://img.shields.io/badge/Telegram-канал автора-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram"></a>
+  &nbsp;
+  <a href="https://www.youtube.com/channel/UCLkP6wuW_P2hnagdaZMBtCw"><img src="https://img.shields.io/badge/YouTube-канал автора-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"></a>
+</p>
+
+---
+
+## Как ставить
+
+- 👤 **Сам, руками** — читай этот README по порядку: подготовка VPS → установка → настройка в Telegram.
+- 🤖 **Через AI-агента** (Claude Code, Cursor и т.п.) — открой [AGENTS.md](AGENTS.md). Там протокол под автоматизацию: какие три значения спросить у пользователя, как запустить установщик через SSH, как проверить успех.
 
 ## Что нужно
 
