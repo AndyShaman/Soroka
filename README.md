@@ -38,7 +38,7 @@
 3. **Свой Telegram-ID** — узнай у [@userinfobot](https://t.me/userinfobot).
 
 После установки бот сам спросит ключи (бесплатные/дешёвые):
-- [Jina](https://jina.ai/embeddings) — эмбеддинги (free tier 1M токенов)
+- [Jina](https://jina.ai/embeddings) — эмбеддинги (free tier 10M токенов, non-commercial)
 - [Deepgram](https://deepgram.com) — голос → текст ($200 free)
 - [OpenRouter](https://openrouter.ai/keys) — LLM (есть `:free` модели)
 - [GitHub Personal Access Token](https://github.com/settings/tokens/new) — для бэкапов
