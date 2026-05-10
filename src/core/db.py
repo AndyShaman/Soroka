@@ -5,19 +5,22 @@ import sqlite_vec
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS owners (
-    telegram_id        INTEGER PRIMARY KEY,
-    jina_api_key       TEXT,
-    deepgram_api_key   TEXT,
-    openrouter_key     TEXT,
-    primary_model      TEXT,
-    fallback_model     TEXT,
-    github_token       TEXT,
-    github_mirror_repo TEXT,
-    vps_host           TEXT,
-    vps_user           TEXT,
-    inbox_chat_id      INTEGER,
-    setup_step         TEXT,
-    created_at         INTEGER NOT NULL
+    telegram_id            INTEGER PRIMARY KEY,
+    jina_api_key           TEXT,
+    deepgram_api_key       TEXT,
+    openrouter_key         TEXT,
+    primary_model          TEXT,
+    fallback_model         TEXT,
+    github_token           TEXT,
+    github_mirror_repo     TEXT,
+    vps_host               TEXT,
+    vps_user               TEXT,
+    inbox_chat_id          INTEGER,
+    setup_step             TEXT,
+    last_backup_at         TEXT,
+    last_backup_error      TEXT,
+    backup_failure_count   INTEGER DEFAULT 0,
+    created_at             INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS notes (
@@ -97,6 +100,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # rebuild the survivor's FTS row when its partner is deleted.
         conn.execute(
             "ALTER TABLE notes ADD COLUMN sibling_note_id INTEGER DEFAULT NULL"
+        )
+    if not _column_exists(conn, "owners", "last_backup_at"):
+        conn.execute("ALTER TABLE owners ADD COLUMN last_backup_at TEXT")
+    if not _column_exists(conn, "owners", "last_backup_error"):
+        conn.execute("ALTER TABLE owners ADD COLUMN last_backup_error TEXT")
+    if not _column_exists(conn, "owners", "backup_failure_count"):
+        conn.execute(
+            "ALTER TABLE owners ADD COLUMN backup_failure_count INTEGER DEFAULT 0"
         )
     conn.commit()
 

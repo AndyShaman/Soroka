@@ -18,17 +18,24 @@ _SECRET_COLUMNS = (
     "vps_host",
     "vps_user",
     "inbox_chat_id",
+    # The daily backup job stores raw HTTP error bodies here. GitHub
+    # responses can echo URL fragments or tokens in failure cases, so we
+    # treat the column as untrusted and strip it on export.
+    "last_backup_error",
 )
 
 
 def build_export(*, db_path: Path, attachments_dir: Optional[Path],
                  output_path: Path, lite: bool = False) -> Path:
-    notes = _read_notes(db_path)
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="soroka-export-") as tmp:
         safe_db = Path(tmp) / "soroka.db"
         _make_safe_db_copy(db_path, safe_db)
+        # Read notes from the snapshot, not the live DB. Reading from live
+        # races with concurrent writers and can produce a notes.json that
+        # disagrees with the bundled soroka.db (a write that landed between
+        # the two reads is in one but not the other).
+        notes = _read_notes(safe_db)
 
         with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
             z.write(safe_db, arcname="soroka.db")

@@ -68,6 +68,9 @@ async def on_help_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     kind = _HELP_TO_KIND.get(payload)
     if not kind:
         return
+    # Mirror the /set* commands: clear any half-finished sub-flow state so
+    # tapping a config button always starts the wizard from step 1.
+    ctx.user_data.pop("github_repo_pending", None)
     ctx.user_data["pending_set"] = kind
     _, prompt = PENDING_PROMPTS[kind]
     await update.callback_query.edit_message_text(prompt, parse_mode="Markdown")

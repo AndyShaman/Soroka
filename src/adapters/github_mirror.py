@@ -35,24 +35,82 @@ class GitHubMirror:
             raise GitHubMirrorError("repo must be private")
         return True
 
-    async def upload_release(self, tag: str, title: str, body: str, asset: Path) -> str:
+    async def upload_release(self, tag: str, title: str, body: str,
+                              asset: Path, replace: bool = False) -> str:
+        """Create a release and upload an asset. With replace=True, an
+        existing release for the tag is updated in place — old assets are
+        removed, the new asset is uploaded, and only then is the release
+        metadata patched. The release id and tag survive the operation, so a
+        mid-flight upload failure leaves the previous state intact (or, in
+        the worst case, an asset-less release that the next run heals)."""
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            r = await client.post(
+            existing = await client.get(
+                f"{self.BASE}/repos/{self._repo}/releases/tags/{tag}",
+                headers=self._headers,
+            )
+            if existing.status_code == 200:
+                if not replace:
+                    raise GitHubMirrorError(
+                        f"release with tag {tag!r} already exists"
+                    )
+                release = existing.json()
+                release_id = release["id"]
+                upload_url = release["upload_url"].split("{")[0]
+                # Delete previous assets first so a same-named new asset
+                # doesn't 422 on a name collision. Each delete is independent
+                # — if one fails we abort, but the release id and tag are
+                # still intact, so the next run can retry from scratch.
+                for asset_obj in release.get("assets", []) or []:
+                    rd = await client.delete(
+                        f"{self.BASE}/repos/{self._repo}/releases/assets/{asset_obj['id']}",
+                        headers=self._headers,
+                    )
+                    if rd.status_code not in (204, 404):
+                        raise GitHubMirrorError(
+                            f"delete asset: {rd.status_code} {rd.text[:200]}"
+                        )
+                with asset.open("rb") as f:
+                    ru = await client.post(
+                        f"{upload_url}?name={asset.name}",
+                        headers={**self._headers, "Content-Type": "application/octet-stream"},
+                        content=f.read(),
+                    )
+                if ru.status_code not in (200, 201):
+                    raise GitHubMirrorError(
+                        f"upload asset: {ru.status_code} {ru.text[:200]}"
+                    )
+                # Asset is up — patch the release body/title last so a metadata
+                # failure cannot strand us with no asset.
+                rp = await client.patch(
+                    f"{self.BASE}/repos/{self._repo}/releases/{release_id}",
+                    headers=self._headers,
+                    json={"name": title, "body": body},
+                )
+                if rp.status_code not in (200, 201):
+                    raise GitHubMirrorError(
+                        f"patch release: {rp.status_code} {rp.text[:200]}"
+                    )
+                return ru.json()["browser_download_url"]
+
+            if existing.status_code != 404:
+                raise GitHubMirrorError(
+                    f"lookup release: {existing.status_code} {existing.text[:200]}"
+                )
+
+            rc = await client.post(
                 f"{self.BASE}/repos/{self._repo}/releases",
                 headers=self._headers,
                 json={"tag_name": tag, "name": title, "body": body},
             )
-            if r.status_code not in (200, 201):
-                raise GitHubMirrorError(f"create release: {r.status_code} {r.text[:200]}")
-            release = r.json()
-            upload_url = release["upload_url"].split("{")[0]
-
+            if rc.status_code not in (200, 201):
+                raise GitHubMirrorError(f"create release: {rc.status_code} {rc.text[:200]}")
+            upload_url = rc.json()["upload_url"].split("{")[0]
             with asset.open("rb") as f:
-                r2 = await client.post(
+                ru = await client.post(
                     f"{upload_url}?name={asset.name}",
                     headers={**self._headers, "Content-Type": "application/octet-stream"},
                     content=f.read(),
                 )
-            if r2.status_code not in (200, 201):
-                raise GitHubMirrorError(f"upload asset: {r2.status_code} {r2.text[:200]}")
-            return r2.json()["browser_download_url"]
+            if ru.status_code not in (200, 201):
+                raise GitHubMirrorError(f"upload asset: {ru.status_code} {ru.text[:200]}")
+            return ru.json()["browser_download_url"]

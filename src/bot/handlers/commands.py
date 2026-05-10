@@ -135,6 +135,17 @@ async def status_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
             return "❌"
         return f"…{v[-4:]} ✓"
 
+    if owner.last_backup_at:
+        backup_line = f"🗄 Бэкап:      `{owner.last_backup_at} UTC`"
+        if owner.backup_failure_count:
+            backup_line += f" ⚠ {owner.backup_failure_count} провал(а) подряд"
+    elif owner.last_backup_error:
+        backup_line = f"🗄 Бэкап:      ⚠ {owner.last_backup_error}"
+    elif owner.github_mirror_repo:
+        backup_line = "🗄 Бэкап:      пока не запускался"
+    else:
+        backup_line = "🗄 Бэкап:      —"
+
     text = (
         f"*Soroka /status*\n\n"
         f"🔑 Jina:       {_mask(owner.jina_api_key)}\n"
@@ -143,6 +154,7 @@ async def status_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         f"🟢 primary:    `{owner.primary_model or '—'}`\n"
         f"🟡 fallback:   `{owner.fallback_model or '—'}`\n"
         f"💾 GitHub:     `{owner.github_mirror_repo or '—'}`\n"
+        f"{backup_line}\n"
         f"📺 Inbox:      `{owner.inbox_chat_id or '—'}`\n"
         f"⚙ Setup step:  `{owner.setup_step}`"
     )
@@ -156,6 +168,7 @@ async def cancel_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         return
     # Clear pending diag state if any (set by /set* commands)
     ctx.user_data.pop("pending_set", None)
+    ctx.user_data.pop("github_repo_pending", None)
     await update.message.reply_text("Отменено.")
 
 
@@ -166,6 +179,7 @@ async def reset_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_owner(update.effective_user.id, settings.owner_telegram_id):
         return
     ctx.user_data.pop("pending_set", None)
+    ctx.user_data.pop("github_repo_pending", None)
     ctx.user_data.pop("last_search", None)
     ctx.user_data.pop("awaiting_refinement", None)
     await update.message.reply_text(
@@ -173,11 +187,20 @@ async def reset_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+from src.bot.handlers.setup_github import (
+    REPO_INSTRUCTION as _GH_REPO_INSTRUCTION,
+    TOKEN_INSTRUCTION as _GH_TOKEN_INSTRUCTION,
+    REPO_PATTERN as _GH_REPO_PATTERN,
+    REPO_REJECT as _GH_REPO_REJECT,
+    TOKEN_REJECT as _GH_TOKEN_REJECT,
+    is_token_like as _gh_is_token_like,
+)
+
 PENDING_PROMPTS = {
     "jina":      ("jina_api_key", "Пришли новый ключ Jina."),
     "deepgram":  ("deepgram_api_key", "Пришли новый ключ Deepgram."),
     "key":       ("openrouter_key", "Пришли новый ключ OpenRouter."),
-    "github":    ("github_pair", "Пришли одной строкой: `<token> <user>/<repo>`."),
+    "github":    ("github_pair", "Шаг 1/2 — " + _GH_REPO_INSTRUCTION),
     "vps":       ("vps_pair", VPS_PROMPT),
     "inbox":     ("inbox", "Форвардни сюда сообщение из нового канала."),
 }
@@ -188,6 +211,10 @@ def _make_set_command(kind: str):
         settings = ctx.application.bot_data["settings"]
         if not is_owner(update.effective_user.id, settings.owner_telegram_id):
             return
+        # Drop any half-finished sub-flow state from a previous /set* run so
+        # restarting /setgithub mid-flow doesn't reuse a stale pending repo
+        # as the implicit input for the next message.
+        ctx.user_data.pop("github_repo_pending", None)
         ctx.user_data["pending_set"] = kind
         _, prompt = PENDING_PROMPTS[kind]
         await update.message.reply_text(prompt, parse_mode="Markdown")
@@ -231,17 +258,36 @@ async def pending_set_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) ->
         update_owner_field(conn, owner_id, "openrouter_key", text)
 
     elif pending == "github":
-        parts = text.split()
-        if len(parts) != 2 or "/" not in parts[1]:
-            await update.message.reply_text("Формат: `<token> <user>/<repo>`. /cancel или попробуй ещё раз.")
+        repo = ctx.user_data.get("github_repo_pending")
+        if not repo:
+            if not _GH_REPO_PATTERN.match(text):
+                await update.message.reply_text(
+                    _GH_REPO_REJECT + "\n\n/cancel или попробуй ещё раз.",
+                    parse_mode="Markdown",
+                )
+                return
+            ctx.user_data["github_repo_pending"] = text
+            await update.message.reply_text(
+                f"✓ Репо `{text}` записал.\n\nШаг 2/2 — " + _GH_TOKEN_INSTRUCTION,
+                parse_mode="Markdown",
+            )
+            return
+        if not _gh_is_token_like(text):
+            await update.message.reply_text(
+                _GH_TOKEN_REJECT + "\n\n/cancel или попробуй ещё раз.",
+                parse_mode="Markdown",
+            )
             return
         try:
-            await GitHubMirror(token=parts[0], repo=parts[1]).validate()
+            await GitHubMirror(token=text, repo=repo).validate()
         except GitHubMirrorError as e:
-            await update.message.reply_text(f"GitHub: {e}. /cancel или попробуй ещё раз.")
+            await update.message.reply_text(
+                f"GitHub отверг настройки: {e}.\nПроверь токен (галка `repo`) или /cancel."
+            )
             return
-        update_owner_field(conn, owner_id, "github_token", parts[0])
-        update_owner_field(conn, owner_id, "github_mirror_repo", parts[1])
+        update_owner_field(conn, owner_id, "github_token", text)
+        update_owner_field(conn, owner_id, "github_mirror_repo", repo)
+        ctx.user_data.pop("github_repo_pending", None)
 
     elif pending == "vps":
         parsed = _parse_vps_input(text)

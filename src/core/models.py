@@ -26,6 +26,9 @@ class Owner(BaseModel):
     vps_user: Optional[str] = None
     inbox_chat_id: Optional[int] = None
     setup_step: Optional[SetupStep] = None
+    last_backup_at: Optional[str] = None
+    last_backup_error: Optional[str] = None
+    backup_failure_count: int = 0
     created_at: int
 
 
