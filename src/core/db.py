@@ -101,6 +101,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE notes ADD COLUMN sibling_note_id INTEGER DEFAULT NULL"
         )
+    if not _column_exists(conn, "notes", "extracted_urls"):
+        # JSON array of URLs lifted from message entities — covers the
+        # invisible-link case where the user forwarded a Markdown embed
+        # like `[Watch](https://youtu.be/…)`. The plain-text body the
+        # extractors operate on never sees those URLs; this column lets
+        # downstream tooling (vault sync, transcript pipelines) recover
+        # videos that Telegram hides behind link text.
+        conn.execute(
+            "ALTER TABLE notes ADD COLUMN extracted_urls TEXT DEFAULT NULL"
+        )
     if not _column_exists(conn, "owners", "last_backup_at"):
         conn.execute("ALTER TABLE owners ADD COLUMN last_backup_at TEXT")
     if not _column_exists(conn, "owners", "last_backup_error"):

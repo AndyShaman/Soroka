@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
 NoteKind = Literal[
@@ -46,6 +46,11 @@ class Note(BaseModel):
     thin_content: bool = False
     deleted_at: Optional[int] = None
     ru_summary: Optional[str] = None
+    # URLs lifted from message entities (text_link, url types). Covers the
+    # invisible-link case where the user forwarded a Markdown embed like
+    # `[Watch on YouTube](https://...)` — the plain text body the body
+    # extractors operate on never sees those URLs, so we capture them here.
+    extracted_urls: Optional[List[str]] = None
 
 
 class Attachment(BaseModel):
