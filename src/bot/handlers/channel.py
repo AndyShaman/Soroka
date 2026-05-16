@@ -170,10 +170,51 @@ def _safe_filename(raw: str | None, fallback_id: str) -> str:
     return f"document_{fallback_id}"
 
 
+def _extract_entity_urls(msg) -> list[str]:
+    """Lift URLs out of message entities — both the text-level and
+    caption-level lists. Telegram exposes two entity kinds we care about:
+
+    - `text_link`: a Markdown embed like `[Watch](https://...)`. The URL
+      lives on `entity.url`; the plain text has only the visible label,
+      so URL-detecting extractors miss it entirely. This is what causes
+      forwarded "📱 Смотреть на YouTube" posts to lose the link.
+    - `url`: a plain URL the user typed in the visible text. We capture
+      it here too so the column reliably holds every URL Telegram
+      believes the message contains, even when the body text wouldn't
+      survive later sanitization.
+
+    Returns URLs in document order, deduplicated, preserving first
+    occurrence. Returns an empty list when the message carries no
+    relevant entities.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def _absorb(text: Optional[str], entities) -> None:
+        if not entities:
+            return
+        for ent in entities:
+            url = getattr(ent, "url", None)
+            if not url and ent.type == "url" and text is not None:
+                url = text[ent.offset:ent.offset + ent.length]
+            if url and url not in seen:
+                seen.add(url)
+                out.append(url)
+
+    _absorb(getattr(msg, "text", None), getattr(msg, "entities", None))
+    _absorb(getattr(msg, "caption", None), getattr(msg, "caption_entities", None))
+    return out
+
+
 async def _route_and_ingest(ctx, conn, owner, msg, *, is_edit: bool = False) -> Optional[int]:
     kind = detect_kind_from_message(msg)
     jina = JinaClient(api_key=owner.jina_api_key)
     deepgram = DeepgramClient(api_key=owner.deepgram_api_key)
+
+    # Capture entity URLs once per message; passed unchanged into every
+    # ingest path that takes them (text + document + post). None if no
+    # entities carried a URL so the column stays NULL on plain messages.
+    entity_urls = _extract_entity_urls(msg) or None
 
     if kind in ("text", "web", "youtube"):
         text = msg.text or msg.caption or ""
@@ -194,6 +235,7 @@ async def _route_and_ingest(ctx, conn, owner, msg, *, is_edit: bool = False) -> 
             openrouter=openrouter,
             primary_model=owner.primary_model,
             fallback_model=owner.fallback_model,
+            extracted_urls=entity_urls,
         )
 
     if kind == "voice":
@@ -221,6 +263,7 @@ async def _route_and_ingest(ctx, conn, owner, msg, *, is_edit: bool = False) -> 
                 kind="oversized", file_size=size,
                 caption=msg.caption, created_at=int(msg.date.timestamp()),
                 is_oversized=True, is_edit=is_edit,
+                extracted_urls=entity_urls,
             )
             raise _OversizedFile
 
@@ -240,6 +283,7 @@ async def _route_and_ingest(ctx, conn, owner, msg, *, is_edit: bool = False) -> 
             kind=kind, file_size=size,
             caption=msg.caption, created_at=int(msg.date.timestamp()),
             is_oversized=False, is_edit=is_edit,
+            extracted_urls=entity_urls,
         )
 
     if kind in ("image", "post"):
@@ -261,6 +305,7 @@ async def _route_and_ingest(ctx, conn, owner, msg, *, is_edit: bool = False) -> 
             kind=kind, file_size=size,
             caption=msg.caption, created_at=int(msg.date.timestamp()),
             is_oversized=False, is_edit=is_edit,
+            extracted_urls=entity_urls,
         )
 
 

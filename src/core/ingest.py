@@ -89,6 +89,7 @@ async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
                       is_edit: bool = False,
                       openrouter=None, primary_model: Optional[str] = None,
                       fallback_model: Optional[str] = None,
+                      extracted_urls: Optional[list[str]] = None,
                       ) -> Optional[int]:
     if not text.strip():
         return None
@@ -158,6 +159,7 @@ async def ingest_text(conn: sqlite3.Connection, *, jina, owner_id: int,
         kind=kind, title=title, content=body.strip(),
         source_url=source_url, raw_caption=caption, created_at=created_at,
         thin_content=is_thin, ru_summary=ru_summary,
+        extracted_urls=extracted_urls,
     )
     return await _save_or_update_note(conn, jina=jina, note=note,
                                        is_edit=is_edit, embed_text=embed_text)
@@ -242,7 +244,9 @@ async def ingest_document(conn: sqlite3.Connection, *, jina, owner_id: int,
                           kind: str, file_size: int,
                           caption: Optional[str], created_at: int,
                           is_oversized: bool,
-                          is_edit: bool = False) -> Optional[int]:
+                          is_edit: bool = False,
+                          extracted_urls: Optional[list[str]] = None,
+                          ) -> Optional[int]:
     if is_oversized:
         body = f"[oversized] {original_name} ({file_size} bytes)\n{caption or ''}"
         title = original_name
@@ -301,6 +305,7 @@ async def ingest_document(conn: sqlite3.Connection, *, jina, owner_id: int,
         kind=kind, title=title, content=body.strip() or original_name,
         raw_caption=caption, created_at=created_at,
         thin_content=is_thin,
+        extracted_urls=extracted_urls,
     )
     embed_text = "" if is_oversized else body.strip()
     note_id = await _save_or_update_note(

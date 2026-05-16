@@ -1,9 +1,33 @@
+import json
 import logging
 import sqlite3
 import time
 from typing import Optional
 
 from src.core.models import Note
+
+
+def _dump_extracted_urls(urls: Optional[list[str]]) -> Optional[str]:
+    """Serialize an optional URL list to JSON for storage. Returns None
+    for empty/missing lists so the column stays NULL on legacy paths."""
+    if not urls:
+        return None
+    return json.dumps(urls, ensure_ascii=False)
+
+
+def _load_extracted_urls(raw: Optional[str]) -> Optional[list[str]]:
+    """Parse the JSON column back into a Python list. Tolerates bad
+    payloads (returns None) since older rows pre-date the column and
+    a hand-edited DB might have anything in it."""
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, list):
+        return None
+    return [str(u) for u in value if u]
 
 logger = logging.getLogger(__name__)
 
@@ -24,11 +48,13 @@ def insert_note(conn: sqlite3.Connection, note: Note, *,
     cur = conn.execute(
         """INSERT OR IGNORE INTO notes
            (owner_id, tg_message_id, tg_chat_id, kind, title, content,
-            source_url, raw_caption, created_at, thin_content, ru_summary)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            source_url, raw_caption, created_at, thin_content, ru_summary,
+            extracted_urls)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (note.owner_id, note.tg_message_id, note.tg_chat_id, note.kind,
          note.title, note.content, note.source_url, note.raw_caption,
-         note.created_at, 1 if note.thin_content else 0, note.ru_summary),
+         note.created_at, 1 if note.thin_content else 0, note.ru_summary,
+         _dump_extracted_urls(note.extracted_urls)),
     )
     if commit:
         conn.commit()
@@ -41,23 +67,35 @@ def insert_note(conn: sqlite3.Connection, note: Note, *,
     return cur.lastrowid
 
 
+_NOTE_COLUMNS = (
+    "id, owner_id, tg_message_id, tg_chat_id, kind, title, content, "
+    "source_url, raw_caption, created_at, "
+    "COALESCE(thin_content, 0), deleted_at, ru_summary, extracted_urls"
+)
+_NOTE_FIELDS = (
+    "id owner_id tg_message_id tg_chat_id kind title content "
+    "source_url raw_caption created_at thin_content deleted_at "
+    "ru_summary extracted_urls"
+).split()
+
+
+def _row_to_note(row) -> Note:
+    data = dict(zip(_NOTE_FIELDS, row))
+    data["thin_content"] = bool(data["thin_content"])
+    data["extracted_urls"] = _load_extracted_urls(data.get("extracted_urls"))
+    return Note(**data)
+
+
 def get_note(conn: sqlite3.Connection, note_id: int) -> Optional[Note]:
     cur = conn.execute(
-        """SELECT id, owner_id, tg_message_id, tg_chat_id, kind, title, content,
-                  source_url, raw_caption, created_at,
-                  COALESCE(thin_content, 0), deleted_at, ru_summary
+        f"""SELECT {_NOTE_COLUMNS}
            FROM notes WHERE id = ? AND deleted_at IS NULL""",
         (note_id,),
     )
     row = cur.fetchone()
     if not row:
         return None
-    fields = ("id owner_id tg_message_id tg_chat_id kind title content "
-              "source_url raw_caption created_at thin_content deleted_at "
-              "ru_summary").split()
-    data = dict(zip(fields, row))
-    data["thin_content"] = bool(data["thin_content"])
-    return Note(**data)
+    return _row_to_note(row)
 
 
 def find_note_id_by_message(conn: sqlite3.Connection, owner_id: int,
@@ -114,31 +152,19 @@ def list_recent_notes(conn: sqlite3.Connection, owner_id: int, limit: int = 20,
                       kind: Optional[str] = None) -> list[Note]:
     if kind is not None:
         cur = conn.execute(
-            """SELECT id, owner_id, tg_message_id, tg_chat_id, kind, title, content,
-                      source_url, raw_caption, created_at,
-                      COALESCE(thin_content, 0), deleted_at, ru_summary
+            f"""SELECT {_NOTE_COLUMNS}
                FROM notes WHERE owner_id = ? AND kind = ? AND deleted_at IS NULL
                ORDER BY created_at DESC LIMIT ?""",
             (owner_id, kind, limit),
         )
     else:
         cur = conn.execute(
-            """SELECT id, owner_id, tg_message_id, tg_chat_id, kind, title, content,
-                      source_url, raw_caption, created_at,
-                      COALESCE(thin_content, 0), deleted_at, ru_summary
+            f"""SELECT {_NOTE_COLUMNS}
                FROM notes WHERE owner_id = ? AND deleted_at IS NULL
                ORDER BY created_at DESC LIMIT ?""",
             (owner_id, limit),
         )
-    fields = ("id owner_id tg_message_id tg_chat_id kind title content "
-              "source_url raw_caption created_at thin_content deleted_at "
-              "ru_summary").split()
-    out = []
-    for row in cur.fetchall():
-        data = dict(zip(fields, row))
-        data["thin_content"] = bool(data["thin_content"])
-        out.append(Note(**data))
-    return out
+    return [_row_to_note(row) for row in cur.fetchall()]
 
 
 def soft_delete_note(conn: sqlite3.Connection, note_id: int, *, reason: str) -> bool:

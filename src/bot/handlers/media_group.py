@@ -67,6 +67,29 @@ def _merged_caption(msgs):
     return "\n\n".join(captions)
 
 
+def _merged_entity_urls(msgs) -> list[str]:
+    """Walk every message in the album and pull URLs from its caption_entities
+    (and text/entities for the rare case of a non-photo first message).
+    Same dedup-by-first-seen semantics as the single-message path."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in msgs:
+        for text, entities in (
+            (getattr(m, "text", None), getattr(m, "entities", None)),
+            (getattr(m, "caption", None), getattr(m, "caption_entities", None)),
+        ):
+            if not entities:
+                continue
+            for ent in entities:
+                url = getattr(ent, "url", None)
+                if not url and ent.type == "url" and text is not None:
+                    url = text[ent.offset:ent.offset + ent.length]
+                if url and url not in seen:
+                    seen.add(url)
+                    out.append(url)
+    return out
+
+
 def _reset_for_tests() -> None:
     """Drop all buffered state. Tests call this in setup so module-level
     globals don't leak between cases."""
@@ -177,6 +200,7 @@ async def flush_album(msgs, ctx) -> None:
     title = (caption or "").splitlines()[0][:80] if caption else fallback_name
 
     jina = JinaClient(api_key=owner.jina_api_key)
+    entity_urls = _merged_entity_urls(msgs) or None
     note = Note(
         owner_id=owner.telegram_id,
         tg_message_id=anchor.message_id,
@@ -187,6 +211,7 @@ async def flush_album(msgs, ctx) -> None:
         raw_caption=caption,
         created_at=int(anchor.date.timestamp()),
         thin_content=False,
+        extracted_urls=entity_urls,
     )
     note_id = await _save_or_update_note(
         conn, jina=jina, note=note, is_edit=False, embed_text=body,
